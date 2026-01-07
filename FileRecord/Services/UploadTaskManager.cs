@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using FileRecord.Data;
 using FileRecord.Models;
+using FileRecord.Utils;
 
 namespace FileRecord.Services.Upload
 {
@@ -143,7 +144,7 @@ namespace FileRecord.Services.Upload
                     task.ErrorMessage = "源文件不存在";
                     return false;
                 }
-                
+                                
                 // 从数据库获取文件信息，检查是否被标记为删除
                 var fileInfoFromDb = GetFileInfoById(task.FileId);
                 if (fileInfoFromDb != null && fileInfoFromDb.IsDeleted)
@@ -151,20 +152,32 @@ namespace FileRecord.Services.Upload
                     Console.WriteLine($"文件已标记为删除，跳过上传: {task.FilePath}");
                     return true; // 返回true表示任务完成（虽然实际上没有上传）
                 }
-
+                                
                 var fileInfo = new System.IO.FileInfo(task.FilePath);
-                
-                // 确定目标路径 - 在备份目录下保持原始目录结构
-                string targetDirectory = System.IO.Path.Combine(_backupDirectory, 
-                    fileInfo.DirectoryName?.Replace(System.IO.Path.GetPathRoot(fileInfo.DirectoryName) ?? "", "").TrimStart('\\', '/') ?? "");
-                
-                if (!System.IO.Directory.Exists(targetDirectory))
+                                
+                // 使用MonitorGroupId作为子目录名
+                var subDir = string.IsNullOrEmpty(fileInfoFromDb?.MonitorGroupId) ? "default" : fileInfoFromDb.MonitorGroupId;
+                var relativePath = System.IO.Path.GetRelativePath(fileInfoFromDb?.DirectoryPath ?? fileInfo.DirectoryName ?? ".", task.FilePath);
+                var targetPath = System.IO.Path.Combine(_backupDirectory, subDir, relativePath);
+                                
+                // 确保目标目录存在
+                var targetDir = System.IO.Path.GetDirectoryName(targetPath);
+                if (!string.IsNullOrEmpty(targetDir) && !System.IO.Directory.Exists(targetDir))
                 {
-                    System.IO.Directory.CreateDirectory(targetDirectory);
+                    System.IO.Directory.CreateDirectory(targetDir);
                 }
-                
-                string targetPath = System.IO.Path.Combine(targetDirectory, fileInfo.Name);
-                
+                                
+                // 检查目标文件是否已存在且内容相同
+                if (System.IO.File.Exists(targetPath))
+                {
+                    var existingMD5 = FileUtils.CalculateMD5(targetPath);
+                    if (existingMD5 == fileInfoFromDb?.MD5Hash)
+                    {
+                        Console.WriteLine($"目标文件已存在且内容相同，跳过上传: {targetPath}");
+                        return true; // 返回true表示成功（因为目标已存在且正确）
+                    }
+                }
+                                
                 // 复制文件到备份目录
                 System.IO.File.Copy(task.FilePath, targetPath, true);
                 
@@ -192,7 +205,7 @@ namespace FileRecord.Services.Upload
             using var connection = new Microsoft.Data.Sqlite.SqliteConnection(_databaseContext.GetConnectionString());
             connection.Open();
             
-            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, IsUploaded, UploadTime, MD5Hash, IsDeleted FROM FileInfos WHERE Id = @Id";
+            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, MonitorGroupId, IsUploaded, UploadTime, MD5Hash, IsDeleted FROM FileInfos WHERE Id = @Id";
             
             using var command = new Microsoft.Data.Sqlite.SqliteCommand(selectSql, connection);
             command.Parameters.AddWithValue("@Id", fileId);
@@ -210,10 +223,11 @@ namespace FileRecord.Services.Upload
                     ModifiedTime = DateTime.Parse(reader.GetString(5)),
                     Extension = reader.GetString(6),
                     DirectoryPath = reader.GetString(7),
-                    IsUploaded = reader.GetInt32(8) == 1,
-                    UploadTime = reader.IsDBNull(9) ? (DateTime?)null : DateTime.Parse(reader.GetString(9)),
-                    MD5Hash = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
-                    IsDeleted = reader.GetInt32(11) == 1
+                    MonitorGroupId = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                    IsUploaded = reader.GetInt32(9) == 1,
+                    UploadTime = reader.IsDBNull(10) ? (DateTime?)null : DateTime.Parse(reader.GetString(10)),
+                    MD5Hash = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
+                    IsDeleted = reader.GetInt32(12) == 1
                 };
             }
             

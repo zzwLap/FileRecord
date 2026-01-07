@@ -29,6 +29,7 @@ namespace FileRecord.Data
                     ModifiedTime TEXT NOT NULL,
                     Extension TEXT,
                     DirectoryPath TEXT,
+                    MonitorGroupId TEXT,
                     IsUploaded INTEGER NOT NULL DEFAULT 0,
                     UploadTime TEXT,
                     MD5Hash TEXT,
@@ -49,6 +50,7 @@ namespace FileRecord.Data
             bool hasUploadTime = false;
             bool hasMD5Hash = false;
             bool hasIsDeleted = false;
+            bool hasMonitorGroupId = false;
             
             while (reader.Read())
             {
@@ -57,6 +59,7 @@ namespace FileRecord.Data
                 if (columnName == "UploadTime") hasUploadTime = true;
                 if (columnName == "MD5Hash") hasMD5Hash = true;
                 if (columnName == "IsDeleted") hasIsDeleted = true;
+                if (columnName == "MonitorGroupId") hasMonitorGroupId = true;
             }
             reader.Close();
             
@@ -91,6 +94,14 @@ namespace FileRecord.Data
                 using var addIsDeletedCommand = new SqliteCommand(addIsDeletedColumnSql, connection);
                 addIsDeletedCommand.ExecuteNonQuery();
             }
+            
+            // ??MonitorGroupId????????
+            if (!hasMonitorGroupId)
+            {
+                var addMonitorGroupIdColumnSql = "ALTER TABLE FileInfos ADD COLUMN MonitorGroupId TEXT";
+                using var addMonitorGroupIdCommand = new SqliteCommand(addMonitorGroupIdColumnSql, connection);
+                addMonitorGroupIdCommand.ExecuteNonQuery();
+            }
         }
         
         public void InsertFileInfo(FileInfoModel fileInfo)
@@ -100,8 +111,8 @@ namespace FileRecord.Data
             
             var insertSql = @"
                 INSERT OR REPLACE INTO FileInfos 
-                (FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, IsUploaded, UploadTime, MD5Hash, IsDeleted) 
-                VALUES (@FileName, @FilePath, @FileSize, @CreatedTime, @ModifiedTime, @Extension, @DirectoryPath, @IsUploaded, @UploadTime, @MD5Hash, @IsDeleted)";
+                (FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, MonitorGroupId, IsUploaded, UploadTime, MD5Hash, IsDeleted) 
+                VALUES (@FileName, @FilePath, @FileSize, @CreatedTime, @ModifiedTime, @Extension, @DirectoryPath, @MonitorGroupId, @IsUploaded, @UploadTime, @MD5Hash, @IsDeleted)";
             
             using var command = new SqliteCommand(insertSql, connection);
             command.Parameters.AddWithValue("@FileName", fileInfo.FileName);
@@ -111,6 +122,7 @@ namespace FileRecord.Data
             command.Parameters.AddWithValue("@ModifiedTime", fileInfo.ModifiedTime.ToString("yyyy-MM-dd HH:mm:ss"));
             command.Parameters.AddWithValue("@Extension", fileInfo.Extension);
             command.Parameters.AddWithValue("@DirectoryPath", fileInfo.DirectoryPath);
+            command.Parameters.AddWithValue("@MonitorGroupId", fileInfo.MonitorGroupId);
             command.Parameters.AddWithValue("@IsUploaded", fileInfo.IsUploaded ? 1 : 0);
             command.Parameters.AddWithValue("@UploadTime", fileInfo.UploadTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? (object)DBNull.Value);
             command.Parameters.AddWithValue("@MD5Hash", fileInfo.MD5Hash);
@@ -153,7 +165,7 @@ namespace FileRecord.Data
             using var connection = new SqliteConnection(_connectionString);
             connection.Open();
             
-            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, IsUploaded, UploadTime, MD5Hash, IsDeleted FROM FileInfos WHERE IsUploaded = 0 AND IsDeleted = 0 ORDER BY CreatedTime DESC";
+            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, MonitorGroupId, IsUploaded, UploadTime, MD5Hash, IsDeleted FROM FileInfos WHERE IsUploaded = 0 AND IsDeleted = 0 ORDER BY CreatedTime DESC";
             
             using var command = new SqliteCommand(selectSql, connection);
             using var reader = command.ExecuteReader();
@@ -170,10 +182,11 @@ namespace FileRecord.Data
                     ModifiedTime = DateTime.Parse(reader.GetString(5)),
                     Extension = reader.GetString(6),
                     DirectoryPath = reader.GetString(7),
-                    IsUploaded = reader.GetInt32(8) == 1,
-                    UploadTime = reader.IsDBNull(9) ? (DateTime?)null : DateTime.Parse(reader.GetString(9)),
-                    MD5Hash = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
-                    IsDeleted = reader.GetInt32(11) == 1
+                    MonitorGroupId = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                    IsUploaded = reader.GetInt32(9) == 1,
+                    UploadTime = reader.IsDBNull(10) ? (DateTime?)null : DateTime.Parse(reader.GetString(10)),
+                    MD5Hash = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
+                    IsDeleted = reader.GetInt32(12) == 1
                 };
                 
                 files.Add(fileInfo);
@@ -207,6 +220,45 @@ namespace FileRecord.Data
             command.Parameters.AddWithValue("@Id", fileId);
             
             command.ExecuteNonQuery();
+        }
+        
+        public List<FileInfoModel> GetAllFilesForMonitorGroup(string monitorGroupId)
+        {
+            var files = new List<FileInfoModel>();
+            
+            using var connection = new SqliteConnection(_connectionString);
+            connection.Open();
+            
+            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, MonitorGroupId, IsUploaded, UploadTime, MD5Hash, IsDeleted FROM FileInfos WHERE MonitorGroupId = @MonitorGroupId ORDER BY CreatedTime DESC";
+            
+            using var command = new SqliteCommand(selectSql, connection);
+            command.Parameters.AddWithValue("@MonitorGroupId", monitorGroupId);
+            
+            using var reader = command.ExecuteReader();
+            
+            while (reader.Read())
+            {
+                var fileInfo = new FileInfoModel
+                {
+                    Id = reader.GetInt32(0),
+                    FileName = reader.GetString(1),
+                    FilePath = reader.GetString(2),
+                    FileSize = reader.GetInt64(3),
+                    CreatedTime = DateTime.Parse(reader.GetString(4)),
+                    ModifiedTime = DateTime.Parse(reader.GetString(5)),
+                    Extension = reader.GetString(6),
+                    DirectoryPath = reader.GetString(7),
+                    MonitorGroupId = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                    IsUploaded = reader.GetInt32(9) == 1,
+                    UploadTime = reader.IsDBNull(10) ? (DateTime?)null : DateTime.Parse(reader.GetString(10)),
+                    MD5Hash = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
+                    IsDeleted = reader.GetInt32(12) == 1
+                };
+                
+                files.Add(fileInfo);
+            }
+            
+            return files;
         }
         
         public string GetConnectionString()

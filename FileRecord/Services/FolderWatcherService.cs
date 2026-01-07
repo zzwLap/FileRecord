@@ -14,13 +14,15 @@ namespace FileRecord.Services
         private readonly DatabaseContext _databaseContext;
         private readonly FileUploadService _uploadService;
         private readonly string _folderPath;
+        private readonly string _monitorGroupId;
         private bool _disposed = false;
 
-        public FolderWatcherService(string folderPath, DatabaseContext databaseContext, FileUploadService uploadService)
+        public FolderWatcherService(string folderPath, DatabaseContext databaseContext, FileUploadService uploadService, string monitorGroupId = "default")
         {
             _folderPath = folderPath;
             _databaseContext = databaseContext;
             _uploadService = uploadService;
+            _monitorGroupId = monitorGroupId;
         }
 
         public void StartWatching()
@@ -73,6 +75,9 @@ namespace FileRecord.Services
                         }
                         
                         var fileInfo = new FileInfoModel(e.FullPath);
+                        
+                        // 设置监控组ID
+                        fileInfo.MonitorGroupId = _monitorGroupId;
                         
                         // 计算MD5值
                         try
@@ -156,6 +161,9 @@ namespace FileRecord.Services
                 {
                     var fileInfo = new FileInfoModel(e.FullPath);
                     
+                    // 设置监控组ID
+                    fileInfo.MonitorGroupId = _monitorGroupId;
+                    
                     // 计算MD5值
                     try
                     {
@@ -202,6 +210,9 @@ namespace FileRecord.Services
                     }
                     
                     var fileInfo = new FileInfoModel(filePath);
+                    
+                    // 设置监控组ID
+                    fileInfo.MonitorGroupId = _monitorGroupId;
                     
                     // 计算MD5值
                     try
