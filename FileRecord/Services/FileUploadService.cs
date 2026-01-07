@@ -41,11 +41,32 @@ namespace FileRecord.Services.Upload
                 
                 if (fileInfoFromDb != null)
                 {
-                    // 如果文件已上传但发生了变化，标记为未上传状态，以便可以重新上传
-                    if (fileInfoFromDb.IsUploaded)
+                    // 如果文件被标记为删除，说明是重新创建的文件，需要重置状态
+                    if (fileInfoFromDb.IsDeleted)
                     {
-                        _databaseContext.MarkFileAsUnuploaded(fileInfoFromDb.Id);
-                        Console.WriteLine($"文件已修改，需要重新上传: {filePath}");
+                        fileInfoFromDb.IsDeleted = false;
+                        _databaseContext.InsertFileInfo(fileInfoFromDb); // 更新数据库中的删除标记
+                        Console.WriteLine($"文件重新创建，已重置删除标记: {filePath}");
+                    }
+                    
+                    // 如果文件已上传但发生了变化，或者文件被重新创建，标记为未上传状态，以便可以重新上传
+                    if (fileInfoFromDb.IsUploaded && !fileInfoFromDb.IsDeleted)
+                    {
+                        // 检查文件是否真的发生了变化（通过MD5比较）
+                        try
+                        {
+                            string currentMD5 = FileRecord.Utils.FileUtils.CalculateMD5(fileInfoFromDb.FilePath);
+                            if (!string.IsNullOrEmpty(fileInfoFromDb.MD5Hash) && !fileInfoFromDb.MD5Hash.Equals(currentMD5, StringComparison.OrdinalIgnoreCase))
+                            {
+                                _databaseContext.MarkFileAsUnuploaded(fileInfoFromDb.Id);
+                                Console.WriteLine($"文件已修改，需要重新上传: {filePath}");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"MD5比较失败，将重新上传: {filePath} - {ex.Message}");
+                            _databaseContext.MarkFileAsUnuploaded(fileInfoFromDb.Id);
+                        }
                     }
                     
                     // 将文件加入上传队列

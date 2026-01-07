@@ -30,7 +30,9 @@ namespace FileRecord.Data
                     Extension TEXT,
                     DirectoryPath TEXT,
                     IsUploaded INTEGER NOT NULL DEFAULT 0,
-                    UploadTime TEXT
+                    UploadTime TEXT,
+                    MD5Hash TEXT,
+                    IsDeleted INTEGER NOT NULL DEFAULT 0
                 )";
             
             using var command = new SqliteCommand(createTableSql, connection);
@@ -45,12 +47,16 @@ namespace FileRecord.Data
             
             bool hasIsUploaded = false;
             bool hasUploadTime = false;
+            bool hasMD5Hash = false;
+            bool hasIsDeleted = false;
             
             while (reader.Read())
             {
                 var columnName = reader.GetString(1);
                 if (columnName == "IsUploaded") hasIsUploaded = true;
                 if (columnName == "UploadTime") hasUploadTime = true;
+                if (columnName == "MD5Hash") hasMD5Hash = true;
+                if (columnName == "IsDeleted") hasIsDeleted = true;
             }
             reader.Close();
             
@@ -69,6 +75,22 @@ namespace FileRecord.Data
                 using var addUploadTimeCommand = new SqliteCommand(addUploadTimeColumnSql, connection);
                 addUploadTimeCommand.ExecuteNonQuery();
             }
+            
+            // ??MD5Hash????????
+            if (!hasMD5Hash)
+            {
+                var addMD5HashColumnSql = "ALTER TABLE FileInfos ADD COLUMN MD5Hash TEXT";
+                using var addMD5HashCommand = new SqliteCommand(addMD5HashColumnSql, connection);
+                addMD5HashCommand.ExecuteNonQuery();
+            }
+            
+            // ??IsDeleted????????
+            if (!hasIsDeleted)
+            {
+                var addIsDeletedColumnSql = "ALTER TABLE FileInfos ADD COLUMN IsDeleted INTEGER NOT NULL DEFAULT 0";
+                using var addIsDeletedCommand = new SqliteCommand(addIsDeletedColumnSql, connection);
+                addIsDeletedCommand.ExecuteNonQuery();
+            }
         }
         
         public void InsertFileInfo(FileInfoModel fileInfo)
@@ -78,8 +100,8 @@ namespace FileRecord.Data
             
             var insertSql = @"
                 INSERT OR REPLACE INTO FileInfos 
-                (FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, IsUploaded, UploadTime) 
-                VALUES (@FileName, @FilePath, @FileSize, @CreatedTime, @ModifiedTime, @Extension, @DirectoryPath, @IsUploaded, @UploadTime)";
+                (FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, IsUploaded, UploadTime, MD5Hash, IsDeleted) 
+                VALUES (@FileName, @FilePath, @FileSize, @CreatedTime, @ModifiedTime, @Extension, @DirectoryPath, @IsUploaded, @UploadTime, @MD5Hash, @IsDeleted)";
             
             using var command = new SqliteCommand(insertSql, connection);
             command.Parameters.AddWithValue("@FileName", fileInfo.FileName);
@@ -91,6 +113,8 @@ namespace FileRecord.Data
             command.Parameters.AddWithValue("@DirectoryPath", fileInfo.DirectoryPath);
             command.Parameters.AddWithValue("@IsUploaded", fileInfo.IsUploaded ? 1 : 0);
             command.Parameters.AddWithValue("@UploadTime", fileInfo.UploadTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? (object)DBNull.Value);
+            command.Parameters.AddWithValue("@MD5Hash", fileInfo.MD5Hash);
+            command.Parameters.AddWithValue("@IsDeleted", fileInfo.IsDeleted ? 1 : 0);
             
             command.ExecuteNonQuery();
         }
@@ -129,7 +153,7 @@ namespace FileRecord.Data
             using var connection = new SqliteConnection(_connectionString);
             connection.Open();
             
-            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, IsUploaded, UploadTime FROM FileInfos WHERE IsUploaded = 0 ORDER BY CreatedTime DESC";
+            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, IsUploaded, UploadTime, MD5Hash, IsDeleted FROM FileInfos WHERE IsUploaded = 0 AND IsDeleted = 0 ORDER BY CreatedTime DESC";
             
             using var command = new SqliteCommand(selectSql, connection);
             using var reader = command.ExecuteReader();
@@ -147,7 +171,9 @@ namespace FileRecord.Data
                     Extension = reader.GetString(6),
                     DirectoryPath = reader.GetString(7),
                     IsUploaded = reader.GetInt32(8) == 1,
-                    UploadTime = reader.IsDBNull(9) ? (DateTime?)null : DateTime.Parse(reader.GetString(9))
+                    UploadTime = reader.IsDBNull(9) ? (DateTime?)null : DateTime.Parse(reader.GetString(9)),
+                    MD5Hash = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
+                    IsDeleted = reader.GetInt32(11) == 1
                 };
                 
                 files.Add(fileInfo);

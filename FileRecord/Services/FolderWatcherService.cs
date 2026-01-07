@@ -4,6 +4,7 @@ using System.Threading;
 using FileRecord.Data;
 using FileRecord.Models;
 using FileRecord.Services.Upload;
+using FileRecord.Utils;
 
 namespace FileRecord.Services
 {
@@ -64,7 +65,35 @@ namespace FileRecord.Services
                     
                     if (File.Exists(e.FullPath))
                     {
+                        // 检查是否为临时文件，如果是则跳过
+                        if (FileUtils.IsTemporaryFile(e.FullPath))
+                        {
+                            Console.WriteLine($"跳过临时文件: {e.Name}");
+                            return;
+                        }
+                        
                         var fileInfo = new FileInfoModel(e.FullPath);
+                        
+                        // 计算MD5值
+                        try
+                        {
+                            fileInfo.MD5Hash = FileUtils.CalculateMD5(e.FullPath);
+                        }
+                        catch (Exception md5Ex)
+                        {
+                            Console.WriteLine($"计算MD5失败 {e.Name}: {md5Ex.Message}");
+                            fileInfo.MD5Hash = string.Empty;
+                        }
+                        
+                        // 如果文件已存在数据库中，检查是否真的有变化
+                        var existingFile = GetFileInfoByPath(e.FullPath);
+                        if (existingFile != null && existingFile.IsDeleted)
+                        {
+                            // 文件之前被标记为删除，现在重新创建
+                            fileInfo.IsDeleted = false; // 重置删除标记
+                            Console.WriteLine($"文件重新创建: {e.Name}");
+                        }
+                        
                         _databaseContext.InsertFileInfo(fileInfo);
                         Console.WriteLine($"文件已记录: {e.Name} ({e.ChangeType})");
                         
@@ -83,8 +112,18 @@ namespace FileRecord.Services
         {
             try
             {
-                _databaseContext.DeleteFileInfo(e.FullPath);
-                Console.WriteLine($"文件已删除记录: {e.Name}");
+                // 不删除记录，而是设置删除标记
+                var existingFile = GetFileInfoByPath(e.FullPath);
+                if (existingFile != null)
+                {
+                    existingFile.IsDeleted = true;
+                    _databaseContext.InsertFileInfo(existingFile); // 更新记录
+                    Console.WriteLine($"文件已标记为删除: {e.Name}");
+                }
+                else
+                {
+                    Console.WriteLine($"删除事件，但文件未在数据库中: {e.Name}");
+                }
             }
             catch (Exception ex)
             {
@@ -96,13 +135,41 @@ namespace FileRecord.Services
         {
             try
             {
-                // 删除旧文件记录
-                _databaseContext.DeleteFileInfo(e.OldFullPath);
+                // 检查新文件是否为临时文件
+                if (FileUtils.IsTemporaryFile(e.FullPath))
+                {
+                    Console.WriteLine($"跳过临时文件重命名: {e.Name}");
+                    return;
+                }
+                
+                // 标记旧文件记录为删除状态
+                var oldFile = GetFileInfoByPath(e.OldFullPath);
+                if (oldFile != null)
+                {
+                    oldFile.IsDeleted = true;
+                    _databaseContext.InsertFileInfo(oldFile); // 更新旧文件为删除状态
+                    Console.WriteLine($"旧文件已标记为删除: {e.OldName}");
+                }
                 
                 // 如果新文件存在，添加新记录
                 if (File.Exists(e.FullPath))
                 {
                     var fileInfo = new FileInfoModel(e.FullPath);
+                    
+                    // 计算MD5值
+                    try
+                    {
+                        fileInfo.MD5Hash = FileUtils.CalculateMD5(e.FullPath);
+                    }
+                    catch (Exception md5Ex)
+                    {
+                        Console.WriteLine($"计算MD5失败 {e.Name}: {md5Ex.Message}");
+                        fileInfo.MD5Hash = string.Empty;
+                    }
+                    
+                    // 重置删除标记（如果文件之前被删除后重命名）
+                    fileInfo.IsDeleted = false;
+                    
                     _databaseContext.InsertFileInfo(fileInfo);
                     Console.WriteLine($"文件已重命名并记录: {e.OldName} -> {e.Name}");
                     
@@ -121,12 +188,37 @@ namespace FileRecord.Services
             Console.WriteLine("正在处理现有文件...");
             
             var allFiles = Directory.GetFiles(_folderPath, "*", SearchOption.AllDirectories);
+            int processedCount = 0;
+            
             foreach (var filePath in allFiles)
             {
                 try
                 {
+                    // 跳过临时文件
+                    if (FileUtils.IsTemporaryFile(filePath))
+                    {
+                        Console.WriteLine($"跳过临时文件: {Path.GetFileName(filePath)}");
+                        continue;
+                    }
+                    
                     var fileInfo = new FileInfoModel(filePath);
+                    
+                    // 计算MD5值
+                    try
+                    {
+                        fileInfo.MD5Hash = FileUtils.CalculateMD5(filePath);
+                    }
+                    catch (Exception md5Ex)
+                    {
+                        Console.WriteLine($"计算MD5失败 {Path.GetFileName(filePath)}: {md5Ex.Message}");
+                        fileInfo.MD5Hash = string.Empty;
+                    }
+                    
+                    // 重置删除标记（如果是重新发现的文件）
+                    fileInfo.IsDeleted = false;
+                    
                     _databaseContext.InsertFileInfo(fileInfo);
+                    processedCount++;
                 }
                 catch (Exception ex)
                 {
@@ -134,9 +226,42 @@ namespace FileRecord.Services
                 }
             }
             
-            Console.WriteLine($"已处理 {allFiles.Length} 个现有文件");
+            Console.WriteLine($"已处理 {processedCount} 个现有文件");
         }
 
+        private FileInfoModel? GetFileInfoByPath(string filePath)
+        {
+            using var connection = new Microsoft.Data.Sqlite.SqliteConnection(_databaseContext.GetConnectionString());
+            connection.Open();
+            
+            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, IsUploaded, UploadTime, MD5Hash, IsDeleted FROM FileInfos WHERE FilePath = @FilePath";
+            
+            using var command = new Microsoft.Data.Sqlite.SqliteCommand(selectSql, connection);
+            command.Parameters.AddWithValue("@FilePath", filePath);
+            
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                return new FileInfoModel
+                {
+                    Id = reader.GetInt32(0),
+                    FileName = reader.GetString(1),
+                    FilePath = reader.GetString(2),
+                    FileSize = reader.GetInt64(3),
+                    CreatedTime = DateTime.Parse(reader.GetString(4)),
+                    ModifiedTime = DateTime.Parse(reader.GetString(5)),
+                    Extension = reader.GetString(6),
+                    DirectoryPath = reader.GetString(7),
+                    IsUploaded = reader.GetInt32(8) == 1,
+                    UploadTime = reader.IsDBNull(9) ? (DateTime?)null : DateTime.Parse(reader.GetString(9)),
+                    MD5Hash = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
+                    IsDeleted = reader.GetInt32(11) == 1
+                };
+            }
+            
+            return null;
+        }
+        
         protected virtual void Dispose(bool disposing)
         {
             if (!_disposed && disposing)

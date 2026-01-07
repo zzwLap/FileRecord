@@ -21,7 +21,7 @@ namespace FileRecord.Tools
             using var connection = new SqliteConnection(_connectionString);
             connection.Open();
             
-            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, IsUploaded, UploadTime FROM FileInfos ORDER BY CreatedTime DESC";
+            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, IsUploaded, UploadTime, MD5Hash, IsDeleted FROM FileInfos ORDER BY CreatedTime DESC";
             
             using var command = new SqliteCommand(selectSql, connection);
             using var reader = command.ExecuteReader();
@@ -39,7 +39,9 @@ namespace FileRecord.Tools
                     Extension = reader.GetString(6),
                     DirectoryPath = reader.GetString(7),
                     IsUploaded = reader.GetInt32(8) == 1,
-                    UploadTime = reader.IsDBNull(9) ? (DateTime?)null : DateTime.Parse(reader.GetString(9))
+                    UploadTime = reader.IsDBNull(9) ? (DateTime?)null : DateTime.Parse(reader.GetString(9)),
+                    MD5Hash = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
+                    IsDeleted = reader.GetInt32(11) == 1
                 };
                 
                 files.Add(fileInfo);
@@ -52,16 +54,18 @@ namespace FileRecord.Tools
         {
             var files = GetAllFiles();
             
-            Console.WriteLine($"?????? {files.Count} ??????");
-            Console.WriteLine(new string('-', 100));
-            Console.WriteLine($"{"ID",-3} {"???",-20} {"??",-10} {"????",-20} {"????",-20} {"???",-8} {"???",-8} {"????",-20} {"??"}");
-            Console.WriteLine(new string('-', 100));
+            Console.WriteLine($"数据库中共有 {files.Count} 个文件记录：");
+            Console.WriteLine(new string('-', 120));
+            Console.WriteLine($"{"ID",-3} {"文件名",-20} {"大小",-10} {"创建时间",-20} {"修改时间",-20} {"扩展名",-8} {"已上传",-8} {"上传时间",-20} {"删除",-6} {"MD5",-10} {"路径"}");
+            Console.WriteLine(new string('-', 120));
             
             foreach (var file in files)
             {
-                var uploadStatus = file.IsUploaded ? "?" : "?";
+                var uploadStatus = file.IsUploaded ? "是" : "否";
                 var uploadTimeStr = file.UploadTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "-";
-                Console.WriteLine($"{file.Id,-3} {file.FileName,-20} {file.FileSize,-10} {file.CreatedTime:yyyy-MM-dd HH:mm:ss,-20} {file.ModifiedTime:yyyy-MM-dd HH:mm:ss,-20} {file.Extension,-8} {uploadStatus,-8} {uploadTimeStr,-20} {file.DirectoryPath}");
+                var deleteStatus = file.IsDeleted ? "是" : "否";
+                var md5Short = file.MD5Hash.Length > 10 ? file.MD5Hash.Substring(0, 10) + "..." : file.MD5Hash;
+                Console.WriteLine($"{file.Id,-3} {file.FileName,-20} {file.FileSize,-10} {file.CreatedTime:yyyy-MM-dd HH:mm:ss,-20} {file.ModifiedTime:yyyy-MM-dd HH:mm:ss,-20} {file.Extension,-8} {uploadStatus,-8} {uploadTimeStr,-20} {deleteStatus,-6} {md5Short,-10} {file.DirectoryPath}");
             }
         }
     }

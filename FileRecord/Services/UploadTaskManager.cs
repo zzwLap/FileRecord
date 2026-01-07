@@ -143,6 +143,14 @@ namespace FileRecord.Services.Upload
                     task.ErrorMessage = "源文件不存在";
                     return false;
                 }
+                
+                // 从数据库获取文件信息，检查是否被标记为删除
+                var fileInfoFromDb = GetFileInfoById(task.FileId);
+                if (fileInfoFromDb != null && fileInfoFromDb.IsDeleted)
+                {
+                    Console.WriteLine($"文件已标记为删除，跳过上传: {task.FilePath}");
+                    return true; // 返回true表示任务完成（虽然实际上没有上传）
+                }
 
                 var fileInfo = new System.IO.FileInfo(task.FilePath);
                 
@@ -176,6 +184,40 @@ namespace FileRecord.Services.Upload
             {
                 EnqueueUpload(file.Id, file.FilePath);
             }
+        }
+        
+        // 从数据库获取特定ID的文件信息
+        private FileInfoModel? GetFileInfoById(int fileId)
+        {
+            using var connection = new Microsoft.Data.Sqlite.SqliteConnection(_databaseContext.GetConnectionString());
+            connection.Open();
+            
+            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, IsUploaded, UploadTime, MD5Hash, IsDeleted FROM FileInfos WHERE Id = @Id";
+            
+            using var command = new Microsoft.Data.Sqlite.SqliteCommand(selectSql, connection);
+            command.Parameters.AddWithValue("@Id", fileId);
+            
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                return new FileInfoModel
+                {
+                    Id = reader.GetInt32(0),
+                    FileName = reader.GetString(1),
+                    FilePath = reader.GetString(2),
+                    FileSize = reader.GetInt64(3),
+                    CreatedTime = DateTime.Parse(reader.GetString(4)),
+                    ModifiedTime = DateTime.Parse(reader.GetString(5)),
+                    Extension = reader.GetString(6),
+                    DirectoryPath = reader.GetString(7),
+                    IsUploaded = reader.GetInt32(8) == 1,
+                    UploadTime = reader.IsDBNull(9) ? (DateTime?)null : DateTime.Parse(reader.GetString(9)),
+                    MD5Hash = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
+                    IsDeleted = reader.GetInt32(11) == 1
+                };
+            }
+            
+            return null;
         }
     }
 }
