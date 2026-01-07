@@ -12,6 +12,7 @@ namespace FileRecord.Services.Upload
     {
         public int FileId { get; set; }
         public string FilePath { get; set; } = string.Empty;
+        public string MonitorGroupId { get; set; } = string.Empty; // 用于标识上传目标配置
         public int RetryCount { get; set; } = 0;
         public DateTime? LastAttempt { get; set; } = null;
         public string? ErrorMessage { get; set; }
@@ -23,7 +24,11 @@ namespace FileRecord.Services.Upload
         private readonly DatabaseContext _databaseContext;
         private readonly string _backupDirectory;
         private readonly CancellationTokenSource _cancellationTokenSource;
+        private readonly Dictionary<string, IUploadTarget> _uploadTargets;
         private Task? _workerTask;
+        
+        // 默认上传目标配置
+        private readonly UploadTargetConfig _defaultConfig;
 
         public UploadTaskManager(DatabaseContext databaseContext, string backupDirectory = "bak")
         {
@@ -31,20 +36,38 @@ namespace FileRecord.Services.Upload
             _databaseContext = databaseContext;
             _backupDirectory = backupDirectory;
             _cancellationTokenSource = new CancellationTokenSource();
-
+            _uploadTargets = new Dictionary<string, IUploadTarget>();
+            
+            // 初始化默认配置
+            _defaultConfig = new UploadTargetConfig
+            {
+                Id = "default",
+                Name = "默认本地备份",
+                TargetType = UploadTargetType.Local,
+                TargetPath = _backupDirectory
+            };
+            
             // 确保备份目录存在
             if (!System.IO.Directory.Exists(_backupDirectory))
             {
                 System.IO.Directory.CreateDirectory(_backupDirectory);
             }
+            
+            // 添加默认上传目标
+            var defaultTarget = new LocalUploadTarget();
+            defaultTarget.InitializeAsync(_defaultConfig).Wait();
+            _uploadTargets["default"] = defaultTarget;
         }
 
         public void EnqueueUpload(int fileId, string filePath)
         {
+            // 从数据库获取文件信息以获取MonitorGroupId
+            var fileInfo = GetFileInfoById(fileId);
             var task = new UploadTask
             {
                 FileId = fileId,
-                FilePath = filePath
+                FilePath = filePath,
+                MonitorGroupId = fileInfo?.MonitorGroupId ?? "default"
             };
             _uploadQueue.Enqueue(task);
         }
@@ -106,9 +129,9 @@ namespace FileRecord.Services.Upload
                 else
                 {
                     // 上传失败，如果重试次数未达到上限，则重新加入队列
-                    if (task.RetryCount < 3) // 最多重试3次
+                    if (task.RetryCount < 3) // 最大重试3次
                     {
-                        Console.WriteLine($"文件上传失败，准备重试 ({task.RetryCount}/3): {task.FilePath} - {task.ErrorMessage}");
+                        Console.WriteLine($"文件上传失败，准备重试({task.RetryCount}/3): {task.FilePath} - {task.ErrorMessage}");
                         await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, task.RetryCount))); // 指数退避
                         _uploadQueue.Enqueue(task);
                     }
@@ -123,7 +146,7 @@ namespace FileRecord.Services.Upload
                 task.ErrorMessage = ex.Message;
                 if (task.RetryCount < 3)
                 {
-                    Console.WriteLine($"文件上传异常，准备重试 ({task.RetryCount}/3): {task.FilePath} - {ex.Message}");
+                    Console.WriteLine($"文件上传异常，准备重试({task.RetryCount}/3): {task.FilePath} - {ex.Message}");
                     await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, task.RetryCount)));
                     _uploadQueue.Enqueue(task);
                 }
@@ -144,7 +167,7 @@ namespace FileRecord.Services.Upload
                     task.ErrorMessage = "源文件不存在";
                     return false;
                 }
-                                
+                        
                 // 从数据库获取文件信息，检查是否被标记为删除
                 var fileInfoFromDb = GetFileInfoById(task.FileId);
                 if (fileInfoFromDb != null && fileInfoFromDb.IsDeleted)
@@ -152,42 +175,64 @@ namespace FileRecord.Services.Upload
                     Console.WriteLine($"文件已标记为删除，跳过上传: {task.FilePath}");
                     return true; // 返回true表示任务完成（虽然实际上没有上传）
                 }
-                                
+                        
                 var fileInfo = new System.IO.FileInfo(task.FilePath);
-                                
-                // 使用MonitorGroupId作为子目录名
-                var subDir = string.IsNullOrEmpty(fileInfoFromDb?.MonitorGroupId) ? "default" : fileInfoFromDb.MonitorGroupId;
+                        
+                // 确定使用的上传目标
+                string targetKey = string.IsNullOrEmpty(task.MonitorGroupId) ? "default" : task.MonitorGroupId;
+                if (!_uploadTargets.ContainsKey(targetKey))
+                {
+                    Console.WriteLine($"未找到上传目标配置: {targetKey}，使用默认配置");
+                    targetKey = "default";
+                }
+                        
+                var uploadTarget = _uploadTargets[targetKey];
+                        
+                // 计算相对路径
                 var relativePath = System.IO.Path.GetRelativePath(fileInfoFromDb?.DirectoryPath ?? fileInfo.DirectoryName ?? ".", task.FilePath);
-                var targetPath = System.IO.Path.Combine(_backupDirectory, subDir, relativePath);
-                                
-                // 确保目标目录存在
-                var targetDir = System.IO.Path.GetDirectoryName(targetPath);
-                if (!string.IsNullOrEmpty(targetDir) && !System.IO.Directory.Exists(targetDir))
-                {
-                    System.IO.Directory.CreateDirectory(targetDir);
-                }
-                                
-                // 检查目标文件是否已存在且内容相同
-                if (System.IO.File.Exists(targetPath))
-                {
-                    var existingMD5 = FileUtils.CalculateMD5(targetPath);
-                    if (existingMD5 == fileInfoFromDb?.MD5Hash)
-                    {
-                        Console.WriteLine($"目标文件已存在且内容相同，跳过上传: {targetPath}");
-                        return true; // 返回true表示成功（因为目标已存在且正确）
-                    }
-                }
-                                
-                // 复制文件到备份目录
-                System.IO.File.Copy(task.FilePath, targetPath, true);
-                
-                return true;
+                        
+                // 执行上传
+                bool success = await uploadTarget.UploadFileAsync(task.FilePath, relativePath);
+                        
+                return success;
             }
             catch (Exception ex)
             {
                 task.ErrorMessage = ex.Message;
                 return false;
             }
+        }
+        
+        /// <summary>
+        /// 添加上传目标配置
+        /// </summary>
+        /// <param name="config">上传目标配置</param>
+        public async Task AddUploadTargetAsync(UploadTargetConfig config)
+        {
+            var uploadTarget = await UploadTargetFactory.CreateAndInitializeUploadTargetAsync(config);
+            _uploadTargets[config.Id] = uploadTarget;
+        }
+        
+        /// <summary>
+        /// 移除上传目标配置
+        /// </summary>
+        /// <param name="targetId">目标ID</param>
+        public void RemoveUploadTarget(string targetId)
+        {
+            if (_uploadTargets.ContainsKey(targetId))
+            {
+                _uploadTargets.Remove(targetId);
+            }
+        }
+        
+        /// <summary>
+        /// 获取上传目标配置
+        /// </summary>
+        /// <param name="targetId">目标ID</param>
+        /// <returns>上传目标配置，如果不存在返回null</returns>
+        public IUploadTarget? GetUploadTarget(string targetId)
+        {
+            return _uploadTargets.ContainsKey(targetId) ? _uploadTargets[targetId] : null;
         }
 
         public void EnqueueUnuploadedFiles()

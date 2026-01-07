@@ -45,7 +45,7 @@ namespace FileRecord.Services
             _watcher.Renamed += OnFileRenamed;
 
             Console.WriteLine($"开始监听文件夹: {_folderPath}");
-            Console.WriteLine("按 'q' 键退出程序...");
+            Console.WriteLine("按'q' 键退出程序..");
         }
 
         public void StopWatching()
@@ -110,7 +110,7 @@ namespace FileRecord.Services
                         }
                         
                         _databaseContext.InsertFileInfo(fileInfo);
-                        Console.WriteLine($"文件已记录: {e.Name} ({e.ChangeType})");
+                        Console.WriteLine($"文件已记录 {e.Name} ({e.ChangeType})");
                         
                         // 触发上传服务
                         _uploadService.EnqueueNewOrModifiedFile(e.FullPath);
@@ -119,7 +119,7 @@ namespace FileRecord.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"处理文件变化时出错: {ex.Message}");
+                Console.WriteLine($"处理文件变化时出错 {ex.Message}");
             }
         }
 
@@ -142,7 +142,7 @@ namespace FileRecord.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"处理文件删除时出错: {ex.Message}");
+                Console.WriteLine($"处理文件删除时出错 {ex.Message}");
             }
         }
 
@@ -171,7 +171,7 @@ namespace FileRecord.Services
                 {
                     oldFile.IsDeleted = true;
                     _databaseContext.InsertFileInfo(oldFile); // 更新旧文件为删除状态
-                    Console.WriteLine($"旧文件已标记为删除: {e.OldName}");
+                    Console.WriteLine($"旧文件已标记为删除 {e.OldName}");
                 }
                 
                 // 如果新文件存在，添加新记录
@@ -197,7 +197,7 @@ namespace FileRecord.Services
                     fileInfo.IsDeleted = false;
                     
                     _databaseContext.InsertFileInfo(fileInfo);
-                    Console.WriteLine($"文件已重命名并记录: {e.OldName} -> {e.Name}");
+                    Console.WriteLine($"文件已重命名并记录 {e.OldName} -> {e.Name}");
                     
                     // 触发上传服务
                     _uploadService.EnqueueNewOrModifiedFile(e.FullPath);
@@ -316,3 +316,6 @@ namespace FileRecord.Services
         }
     }
 }
+
+
+

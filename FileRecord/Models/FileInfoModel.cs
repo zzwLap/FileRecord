@@ -13,7 +13,7 @@ namespace FileRecord.Models
         public DateTime ModifiedTime { get; set; }
         public string Extension { get; set; } = string.Empty;
         public string DirectoryPath { get; set; } = string.Empty;
-        public string MonitorGroupId { get; set; } = string.Empty;  // ??????????
+        public string MonitorGroupId { get; set; } = string.Empty;  // 用于标识监控组ID
         public bool IsUploaded { get; set; } = false;
         public DateTime? UploadTime { get; set; } = null;
         public string MD5Hash { get; set; } = string.Empty;

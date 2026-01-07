@@ -11,10 +11,28 @@ namespace FileRecord.Services.Upload
         private readonly DatabaseContext _databaseContext;
         private readonly UploadTaskManager _taskManager;
         
-        public FileUploadService(DatabaseContext databaseContext, UploadTaskManager taskManager, string backupDirectory = "bak")
+        public FileUploadService(DatabaseContext databaseContext, UploadTaskManager taskManager)
         {
             _databaseContext = databaseContext;
             _taskManager = taskManager;
+        }
+        
+        /// <summary>
+        /// 添加上传目标配置
+        /// </summary>
+        /// <param name="config">上传目标配置</param>
+        public async Task AddUploadTargetAsync(UploadTargetConfig config)
+        {
+            await _taskManager.AddUploadTargetAsync(config);
+        }
+        
+        /// <summary>
+        /// 移除上传目标配置
+        /// </summary>
+        /// <param name="targetId">目标ID</param>
+        public void RemoveUploadTarget(string targetId)
+        {
+            _taskManager.RemoveUploadTarget(targetId);
         }
         
         public void EnqueueFileForUpload(int fileId, string filePath)
@@ -90,7 +108,7 @@ namespace FileRecord.Services.Upload
             using var connection = new Microsoft.Data.Sqlite.SqliteConnection(_databaseContext.GetConnectionString());
             connection.Open();
             
-            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, IsUploaded, UploadTime FROM FileInfos WHERE FilePath = @FilePath";
+            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, MonitorGroupId, IsUploaded, UploadTime FROM FileInfos WHERE FilePath = @FilePath";
             
             using var command = new Microsoft.Data.Sqlite.SqliteCommand(selectSql, connection);
             command.Parameters.AddWithValue("@FilePath", filePath);
@@ -108,8 +126,9 @@ namespace FileRecord.Services.Upload
                     ModifiedTime = DateTime.Parse(reader.GetString(5)),
                     Extension = reader.GetString(6),
                     DirectoryPath = reader.GetString(7),
-                    IsUploaded = reader.GetInt32(8) == 1,
-                    UploadTime = reader.IsDBNull(9) ? (DateTime?)null : DateTime.Parse(reader.GetString(9))
+                    MonitorGroupId = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                    IsUploaded = reader.GetInt32(9) == 1,
+                    UploadTime = reader.IsDBNull(10) ? (DateTime?)null : DateTime.Parse(reader.GetString(10))
                 };
             }
             

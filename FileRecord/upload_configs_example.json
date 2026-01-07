@@ -1,0 +1,61 @@
+{
+  "uploadTargets": [
+    {
+      "id": "local_backup",
+      "name": "????",
+      "targetType": 0,
+      "targetPath": "bak",
+      "credentials": {
+        "accessKeyId": "",
+        "secretAccessKey": "",
+        "username": "",
+        "password": "",
+        "token": "",
+        "endpoint": "",
+        "containerName": ""
+      },
+      "pathMappingRule": "",
+      "timeoutSeconds": 300,
+      "maxRetries": 3,
+      "enableCompression": false
+    },
+    {
+      "id": "ftp_server",
+      "name": "FTP???",
+      "targetType": 1,
+      "targetPath": "ftp://ftp.example.com/uploads",
+      "credentials": {
+        "accessKeyId": "",
+        "secretAccessKey": "",
+        "username": "ftp_user",
+        "password": "ftp_password",
+        "token": "",
+        "endpoint": "",
+        "containerName": ""
+      },
+      "pathMappingRule": "",
+      "timeoutSeconds": 300,
+      "maxRetries": 3,
+      "enableCompression": false
+    },
+    {
+      "id": "aws_s3",
+      "name": "AWS S3??",
+      "targetType": 2,
+      "targetPath": "https://s3.amazonaws.com/my-bucket",
+      "credentials": {
+        "accessKeyId": "your_access_key_id",
+        "secretAccessKey": "your_secret_access_key",
+        "username": "",
+        "password": "",
+        "token": "",
+        "endpoint": "https://s3.amazonaws.com",
+        "containerName": "my-bucket"
+      },
+      "pathMappingRule": "",
+      "timeoutSeconds": 300,
+      "maxRetries": 3,
+      "enableCompression": false
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using FileRecord.Data;
 using FileRecord.Services;
 using FileRecord.Services.Upload;

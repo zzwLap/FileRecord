@@ -1,3 +1,7 @@
+        /// <summary>
+        /// 添加要监控的文件夹
+        /// </summary>
+        /// <param name="folderPath">要监控的文件夹路径</param>
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -26,11 +30,11 @@ namespace FileRecord.Services
         }
 
         /// <summary>
-        /// ?????????
+        /// 添加要监控的文件夹
         /// </summary>
-        /// <param name="folderPath">????????</param>
-        /// <param name="monitorGroupId">???ID????????????</param>
-        /// <param name="filterRule">????????null???????</param>
+        /// <param name="folderPath">要监控的文件夹路径</param>
+        /// <param name="monitorGroupId">监控组ID，用于区分不同监控目录</param>
+        /// <param name="filterRule">文件过滤规则，如果为null则不进行过滤</param>
         public void AddFolderToWatch(string folderPath, string monitorGroupId, FileFilterRule? filterRule = null)
         {
             if (!Directory.Exists(folderPath))
@@ -44,15 +48,15 @@ namespace FileRecord.Services
                 return;
             }
 
-            // ?????FolderWatcherService??????MonitorGroupId?????
+            // 创建FolderWatcherService实例并设置MonitorGroupId
             var watcher = new FolderWatcherService(folderPath, _databaseContext, _uploadService, monitorGroupId, filterRule);
             _watchers[folderPath] = watcher;
         }
 
         /// <summary>
-        /// ???????
+        /// 移除监控的文件夹
         /// </summary>
-        /// <param name="folderPath">??????????</param>
+        /// <param name="folderPath">要移除监控的文件夹路径</param>
         public void RemoveFolderFromWatch(string folderPath)
         {
             if (_watchers.TryGetValue(folderPath, out var watcher))
@@ -63,7 +67,7 @@ namespace FileRecord.Services
         }
 
         /// <summary>
-        /// ???????????
+        /// 开始监控所有文件夹
         /// </summary>
         public void StartWatching()
         {
@@ -74,10 +78,10 @@ namespace FileRecord.Services
 
                 try
                 {
-                    // ??????
+                    // 处理现有文件
                     watcher.ProcessExistingFiles();
 
-                    // ????
+                    // 开始监控
                     watcher.StartWatching();
                     
                     Console.WriteLine($"Started watching folder: {folderPath}");
@@ -93,7 +97,7 @@ namespace FileRecord.Services
         }
 
         /// <summary>
-        /// ????????
+        /// 停止监控所有文件夹
         /// </summary>
         public void StopWatching()
         {
@@ -104,7 +108,7 @@ namespace FileRecord.Services
         }
 
         /// <summary>
-        /// ???????????
+        /// 获取监控的文件夹数量
         /// </summary>
         public int GetWatchedFolderCount()
         {
@@ -112,7 +116,7 @@ namespace FileRecord.Services
         }
 
         /// <summary>
-        /// ???????????
+        /// 获取所有被监控的文件夹列表
         /// </summary>
         public List<string> GetWatchedFolders()
         {
@@ -120,9 +124,9 @@ namespace FileRecord.Services
         }
 
         /// <summary>
-        /// ????????????
+        /// 获取特定监控组的文件数量
         /// </summary>
-        /// <param name="monitorGroupId">???ID</param>
+        /// <param name="monitorGroupId">监控组ID</param>
         public int GetFileCountForGroup(string monitorGroupId)
         {
             var allFiles = _databaseContext.GetAllFilesForMonitorGroup(monitorGroupId);
