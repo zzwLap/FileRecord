@@ -15,14 +15,16 @@ namespace FileRecord.Services
         private readonly FileUploadService _uploadService;
         private readonly string _folderPath;
         private readonly string _monitorGroupId;
+        private readonly FileFilterRule? _filterRule;
         private bool _disposed = false;
 
-        public FolderWatcherService(string folderPath, DatabaseContext databaseContext, FileUploadService uploadService, string monitorGroupId = "default")
+        public FolderWatcherService(string folderPath, DatabaseContext databaseContext, FileUploadService uploadService, string monitorGroupId = "default", FileFilterRule? filterRule = null)
         {
             _folderPath = folderPath;
             _databaseContext = databaseContext;
             _uploadService = uploadService;
             _monitorGroupId = monitorGroupId;
+            _filterRule = filterRule;
         }
 
         public void StartWatching()
@@ -67,6 +69,14 @@ namespace FileRecord.Services
                     
                     if (File.Exists(e.FullPath))
                     {
+                        // 检查文件是否符合过滤规则
+                        var fileInfoForCheck = new FileInfo(e.FullPath);
+                        if (_filterRule != null && !_filterRule.IsFileAllowed(e.FullPath, fileInfoForCheck.Length))
+                        {
+                            Console.WriteLine($"跳过不符合过滤规则的文件: {e.Name}");
+                            return;
+                        }
+
                         // 检查是否为临时文件，如果是则跳过
                         if (FileUtils.IsTemporaryFile(e.FullPath))
                         {
@@ -140,6 +150,14 @@ namespace FileRecord.Services
         {
             try
             {
+                // 检查新文件是否符合过滤规则
+                var fileInfoForCheck = new FileInfo(e.FullPath);
+                if (_filterRule != null && !_filterRule.IsFileAllowed(e.FullPath, fileInfoForCheck.Length))
+                {
+                    Console.WriteLine($"跳过不符合过滤规则的文件重命名: {e.Name}");
+                    return;
+                }
+                
                 // 检查新文件是否为临时文件
                 if (FileUtils.IsTemporaryFile(e.FullPath))
                 {
@@ -202,6 +220,14 @@ namespace FileRecord.Services
             {
                 try
                 {
+                    // 检查文件是否符合过滤规则
+                    var fileInfoForCheck = new FileInfo(filePath);
+                    if (_filterRule != null && !_filterRule.IsFileAllowed(filePath, fileInfoForCheck.Length))
+                    {
+                        Console.WriteLine($"跳过不符合过滤规则的文件: {Path.GetFileName(filePath)}");
+                        continue;
+                    }
+                    
                     // 跳过临时文件
                     if (FileUtils.IsTemporaryFile(filePath))
                     {
@@ -245,7 +271,7 @@ namespace FileRecord.Services
             using var connection = new Microsoft.Data.Sqlite.SqliteConnection(_databaseContext.GetConnectionString());
             connection.Open();
             
-            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, IsUploaded, UploadTime, MD5Hash, IsDeleted FROM FileInfos WHERE FilePath = @FilePath";
+            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, MonitorGroupId, IsUploaded, UploadTime, MD5Hash, IsDeleted FROM FileInfos WHERE FilePath = @FilePath";
             
             using var command = new Microsoft.Data.Sqlite.SqliteCommand(selectSql, connection);
             command.Parameters.AddWithValue("@FilePath", filePath);
@@ -263,10 +289,11 @@ namespace FileRecord.Services
                     ModifiedTime = DateTime.Parse(reader.GetString(5)),
                     Extension = reader.GetString(6),
                     DirectoryPath = reader.GetString(7),
-                    IsUploaded = reader.GetInt32(8) == 1,
-                    UploadTime = reader.IsDBNull(9) ? (DateTime?)null : DateTime.Parse(reader.GetString(9)),
-                    MD5Hash = reader.IsDBNull(10) ? string.Empty : reader.GetString(10),
-                    IsDeleted = reader.GetInt32(11) == 1
+                    MonitorGroupId = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                    IsUploaded = reader.GetInt32(9) == 1,
+                    UploadTime = reader.IsDBNull(10) ? (DateTime?)null : DateTime.Parse(reader.GetString(10)),
+                    MD5Hash = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
+                    IsDeleted = reader.GetInt32(12) == 1
                 };
             }
             

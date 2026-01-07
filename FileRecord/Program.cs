@@ -3,6 +3,7 @@ using FileRecord.Data;
 using FileRecord.Services;
 using FileRecord.Services.Upload;
 using FileRecord.Tools;
+using FileRecord.Utils;
 
 // 检查命令行参数
 if (args.Length > 0 && args[0] == "--view")
@@ -37,6 +38,73 @@ if (string.IsNullOrWhiteSpace(folderPathsInput))
     return;
 }
 
+// 询问是否使用过滤规则
+Console.WriteLine("是否要为监控目录设置文件过滤规则？(y/n，默认为n): ");
+string? useFilterInput = Console.ReadLine();
+bool useFilters = !string.IsNullOrEmpty(useFilterInput) && useFilterInput.ToLower().StartsWith("y");
+
+FileFilterRule? defaultFilterRule = null;
+if (useFilters)
+{
+    Console.WriteLine("选择过滤规则类型:");
+    Console.WriteLine("1. 文档文件 (.doc, .pdf, .txt等)");
+    Console.WriteLine("2. 图片文件 (.jpg, .png, .gif等)");
+    Console.WriteLine("3. 视频文件 (.mp4, .avi, .mkv等)");
+    Console.WriteLine("4. 音频文件 (.mp3, .wav, .flac等)");
+    Console.WriteLine("5. 代码文件 (.cs, .js, .py等)");
+    Console.WriteLine("6. 自定义扩展名");
+    Console.WriteLine("7. 按文件大小过滤");
+    Console.Write("请选择 (1-7, 默认为全部文件): ");
+    
+    string? filterChoice = Console.ReadLine();
+    
+    switch (filterChoice)
+    {
+        case "1":
+            defaultFilterRule = FileFilterRuleFactory.CreateDocumentRule();
+            Console.WriteLine($"已选择文档文件过滤规则");
+            break;
+        case "2":
+            defaultFilterRule = FileFilterRuleFactory.CreateImageRule();
+            Console.WriteLine($"已选择图片文件过滤规则");
+            break;
+        case "3":
+            defaultFilterRule = FileFilterRuleFactory.CreateVideoRule();
+            Console.WriteLine($"已选择视频文件过滤规则");
+            break;
+        case "4":
+            defaultFilterRule = FileFilterRuleFactory.CreateAudioRule();
+            Console.WriteLine($"已选择音频文件过滤规则");
+            break;
+        case "5":
+            defaultFilterRule = FileFilterRuleFactory.CreateCodeRule();
+            Console.WriteLine($"已选择代码文件过滤规则");
+            break;
+        case "6":
+            Console.Write("请输入允许的扩展名，用逗号分隔 (例如: .txt,.pdf,.doc): ");
+            string? customExtsInput = Console.ReadLine();
+            if (!string.IsNullOrWhiteSpace(customExtsInput))
+            {
+                string[] customExts = customExtsInput.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                defaultFilterRule = FileFilterRuleFactory.CreateCustomRule(customExts);
+                Console.WriteLine($"已选择自定义扩展名过滤规则");
+            }
+            break;
+        case "7":
+            Console.Write("请输入最大文件大小 (MB): ");
+            if (double.TryParse(Console.ReadLine(), out double maxMb) && maxMb > 0)
+            {
+                long maxSize = (long)(maxMb * 1024 * 1024);
+                defaultFilterRule = FileFilterRuleFactory.CreateSizeRule(0, maxSize);
+                Console.WriteLine($"已选择大小限制过滤规则 (最大 {maxMb} MB)");
+            }
+            break;
+        default:
+            Console.WriteLine($"使用默认规则（所有文件）");
+            break;
+    }
+}
+
 // 解析路径列表
 string[] folderPaths = folderPathsInput.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
@@ -46,7 +114,7 @@ foreach (var path in folderPaths)
     if (Directory.Exists(path))
     {
         string monitorGroupId = $"Group_{Path.GetFileName(path)}"; // 使用目录名作为监控组ID
-        multiWatcherService.AddFolderToWatch(path, monitorGroupId);
+        multiWatcherService.AddFolderToWatch(path, monitorGroupId, defaultFilterRule);
         Console.WriteLine($"已添加监控目录: {path} (组ID: {monitorGroupId})");
     }
     else

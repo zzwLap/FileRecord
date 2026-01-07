@@ -5,6 +5,7 @@ using System.Linq;
 using FileRecord.Data;
 using FileRecord.Models;
 using FileRecord.Services.Upload;
+using FileRecord.Utils;
 
 namespace FileRecord.Services
 {
@@ -29,7 +30,8 @@ namespace FileRecord.Services
         /// </summary>
         /// <param name="folderPath">????????</param>
         /// <param name="monitorGroupId">???ID????????????</param>
-        public void AddFolderToWatch(string folderPath, string monitorGroupId)
+        /// <param name="filterRule">????????null???????</param>
+        public void AddFolderToWatch(string folderPath, string monitorGroupId, FileFilterRule? filterRule = null)
         {
             if (!Directory.Exists(folderPath))
             {
@@ -42,8 +44,8 @@ namespace FileRecord.Services
                 return;
             }
 
-            // ?????FolderWatcherService??????MonitorGroupId
-            var watcher = new FolderWatcherService(folderPath, _databaseContext, _uploadService, monitorGroupId);
+            // ?????FolderWatcherService??????MonitorGroupId?????
+            var watcher = new FolderWatcherService(folderPath, _databaseContext, _uploadService, monitorGroupId, filterRule);
             _watchers[folderPath] = watcher;
         }
 
