@@ -1,0 +1,91 @@
+using System;
+using FileRecord.Utils;
+
+/// <summary>
+/// ?????????
+/// </summary>
+public class WildcardRuleExample
+{
+    public static void DemonstrateWildcardRules()
+    {
+        Console.WriteLine("=== ????????? ===\n");
+
+        // ??1: ?? "*a.*" ?? - ?????????? "a" ????????
+        Console.WriteLine("1. '*a.*' ?? - ?????????? 'a' ????????:");
+        var rule1 = FileFilterRuleFactory.CreateWildcardRule("*a.*");
+        TestRuleWithFiles(rule1, new[] {
+            "document_a.txt",    // ? ?? - ?? 'a' ?????
+            "test_file.docx",    // ? ??? - ??? 'a'
+            "data.csv",          // ? ??? - ??? 'a'
+            "application.exe",   // ? ?? - ?? 'a' ?????
+            "my_app.config",     // ? ?? - ?? 'a' ?????
+            "readme.md",         // ? ??? - ??? 'a'
+            "backup.bak",        // ? ??? - ??? 'a'
+            "data_a.json"        // ? ?? - ?? 'a' ?????
+        });
+
+        Console.WriteLine("\n2. '*.txt' ?? - ???? .txt ??:");
+        var rule2 = FileFilterRuleFactory.CreateWildcardRule("*.txt");
+        TestRuleWithFiles(rule2, new[] {
+            "document.txt",      // ? ?? - .txt ??
+            "image.png",         // ? ??? - .png ??
+            "script.js",         // ? ??? - .js ??
+            "readme.txt",        // ? ?? - .txt ??
+            "data.xml"           // ? ??? - .xml ??
+        });
+
+        Console.WriteLine("\n3. 'test*' ?? - ??? 'test' ?????:");
+        var rule3 = FileFilterRuleFactory.CreateWildcardRule("test*");
+        TestRuleWithFiles(rule3, new[] {
+            "test.txt",          // ? ?? - ? 'test' ??
+            "test_data.json",    // ? ?? - ? 'test' ??
+            "my_test.doc",       // ? ??? - ?? 'test' ??
+            "testing.pdf",       // ? ?? - ? 'test' ??
+            "example.txt"        // ? ??? - ?? 'test' ??
+        });
+
+        Console.WriteLine("\n4. 'data?.csv' ?? - ?? 'data' ??????? '.csv' ???:");
+        var rule4 = FileFilterRuleFactory.CreateWildcardRule("data?.csv");
+        TestRuleWithFiles(rule4, new[] {
+            "data1.csv",         // ? ?? - data + ???? + .csv
+            "data_.csv",         // ? ?? - data + ???? + .csv
+            "data.csv",          // ? ??? - ?????????
+            "datas.csv",         // ? ??? - ??????
+            "data1.xlsx",        // ? ??? - ????? .csv
+            "info1.csv"          // ? ??? - ?? 'data' ??
+        });
+
+        Console.WriteLine("\n=== ???????? ===\n");
+        
+        // ??5: ????????
+        Console.WriteLine("5. ???? 'a' ???:");
+        var rule5 = FileFilterRuleFactory.CreateCharacterInNameRule('a');
+        TestRuleWithFiles(rule5, new[] {
+            "document.txt",      // ? ?? - ?? 'a'
+            "hello.doc",         // ? ??? - ??? 'a'
+            "application.exe",   // ? ?? - ?? 'a'
+            "readme.md",         // ? ??? - ??? 'a'
+            "data.json"          // ? ?? - ?? 'a'
+        });
+    }
+
+    private static void TestRuleWithFiles(FileFilterRule rule, string[] testFiles)
+    {
+        Console.WriteLine($"   ??: {rule.FileNamePatterns[0]}");
+        foreach (var file in testFiles)
+        {
+            try
+            {
+                // ???????????????
+                var isMatch = System.Text.RegularExpressions.Regex.IsMatch(file, rule.FileNamePatterns[0]);
+                var status = isMatch ? "?" : "?";
+                Console.WriteLine($"   {status} {file}");
+            }
+            catch (System.Text.RegularExpressions.RegexParseException)
+            {
+                Console.WriteLine($"   ! ????????: {file}");
+            }
+        }
+        Console.WriteLine();
+    }
+}

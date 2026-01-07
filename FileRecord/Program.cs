@@ -13,6 +13,12 @@ if (args.Length > 0 && args[0] == "--view")
     dbTool.PrintAllFiles();
     return;
 }
+else if (args.Length > 0 && args[0] == "--demo")
+{
+    // 运行通配符规则演示
+    WildcardRuleExample.DemonstrateWildcardRules();
+    return;
+}
 
 // 创建数据库上下文
 var databaseContext = new DatabaseContext();
@@ -54,7 +60,9 @@ if (useFilters)
     Console.WriteLine("5. 代码文件 (.cs, .js, .py等)");
     Console.WriteLine("6. 自定义扩展名");
     Console.WriteLine("7. 按文件大小过滤");
-    Console.Write("请选择 (1-7, 默认为全部文件): ");
+    Console.WriteLine("8. 通配符模式 (*a.*, *.txt, test* 等)");
+    Console.WriteLine("9. 包含特定字符 (如包含字母 a 的文件)");
+    Console.Write("请选择 (1-9, 默认为全部文件): ");
     
     string? filterChoice = Console.ReadLine();
     
@@ -97,6 +105,24 @@ if (useFilters)
                 long maxSize = (long)(maxMb * 1024 * 1024);
                 defaultFilterRule = FileFilterRuleFactory.CreateSizeRule(0, maxSize);
                 Console.WriteLine($"已选择大小限制过滤规则 (最大 {maxMb} MB)");
+            }
+            break;
+        case "8":
+            Console.Write("请输入通配符模式 (例如: *a.*, *.txt, test*, 等): ");
+            string? wildcardPattern = Console.ReadLine();
+            if (!string.IsNullOrWhiteSpace(wildcardPattern))
+            {
+                defaultFilterRule = FileFilterRuleFactory.CreateWildcardRule(wildcardPattern);
+                Console.WriteLine($"已选择通配符过滤规则: {wildcardPattern}");
+            }
+            break;
+        case "9":
+            Console.Write("请输入要匹配的字符 (例如: a, b, c 等): ");
+            string? charInput = Console.ReadLine();
+            if (!string.IsNullOrWhiteSpace(charInput) && charInput.Length == 1)
+            {
+                defaultFilterRule = FileFilterRuleFactory.CreateCharacterInNameRule(charInput[0]);
+                Console.WriteLine($"已选择字符匹配过滤规则: 包含字符 '{charInput[0]}'");
             }
             break;
         default:
