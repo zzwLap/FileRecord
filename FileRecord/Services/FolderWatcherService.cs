@@ -33,14 +33,14 @@ namespace FileRecord.Services
             _watcher.IncludeSubdirectories = true;
             _watcher.EnableRaisingEvents = true;
 
-            // ????????
+            // 监听所有文件变化
             _watcher.Created += OnFileChanged;
             _watcher.Changed += OnFileChanged;
             _watcher.Deleted += OnFileDeleted;
             _watcher.Renamed += OnFileRenamed;
 
-            Console.WriteLine($"???????: {_folderPath}");
-            Console.WriteLine("? 'q' ?????...");
+            Console.WriteLine($"开始监听文件夹: {_folderPath}");
+            Console.WriteLine("按 'q' 键退出程序...");
         }
 
         public void StopWatching()
@@ -59,23 +59,23 @@ namespace FileRecord.Services
             {
                 if (e.ChangeType == WatcherChangeTypes.Created || e.ChangeType == WatcherChangeTypes.Changed)
                 {
-                    // ???????????????????
+                    // 等待文件操作完成，避免文件被占用的问题
                     Thread.Sleep(100);
                     
                     if (File.Exists(e.FullPath))
                     {
                         var fileInfo = new FileInfoModel(e.FullPath);
                         _databaseContext.InsertFileInfo(fileInfo);
-                        Console.WriteLine($"?????: {e.Name} ({e.ChangeType})");
+                        Console.WriteLine($"文件已记录: {e.Name} ({e.ChangeType})");
                         
-                        // ??????
-                        _uploadService.UploadNewOrModifiedFile(e.FullPath);
+                        // 触发上传服务
+                        _uploadService.EnqueueNewOrModifiedFile(e.FullPath);
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"?????????: {ex.Message}");
+                Console.WriteLine($"处理文件变化时出错: {ex.Message}");
             }
         }
 
@@ -84,11 +84,11 @@ namespace FileRecord.Services
             try
             {
                 _databaseContext.DeleteFileInfo(e.FullPath);
-                Console.WriteLine($"???????: {e.Name}");
+                Console.WriteLine($"文件已删除记录: {e.Name}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"?????????: {ex.Message}");
+                Console.WriteLine($"处理文件删除时出错: {ex.Message}");
             }
         }
 
@@ -96,29 +96,29 @@ namespace FileRecord.Services
         {
             try
             {
-                // ???????
+                // 删除旧文件记录
                 _databaseContext.DeleteFileInfo(e.OldFullPath);
                 
-                // ?????????????
+                // 如果新文件存在，添加新记录
                 if (File.Exists(e.FullPath))
                 {
                     var fileInfo = new FileInfoModel(e.FullPath);
                     _databaseContext.InsertFileInfo(fileInfo);
-                    Console.WriteLine($"?????????: {e.OldName} -> {e.Name}");
+                    Console.WriteLine($"文件已重命名并记录: {e.OldName} -> {e.Name}");
                     
-                    // ??????
-                    _uploadService.UploadNewOrModifiedFile(e.FullPath);
+                    // 触发上传服务
+                    _uploadService.EnqueueNewOrModifiedFile(e.FullPath);
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"??????????: {ex.Message}");
+                Console.WriteLine($"处理文件重命名时出错: {ex.Message}");
             }
         }
 
         public void ProcessExistingFiles()
         {
-            Console.WriteLine("????????...");
+            Console.WriteLine("正在处理现有文件...");
             
             var allFiles = Directory.GetFiles(_folderPath, "*", SearchOption.AllDirectories);
             foreach (var filePath in allFiles)
@@ -130,11 +130,11 @@ namespace FileRecord.Services
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"?????? {filePath} ???: {ex.Message}");
+                    Console.WriteLine($"处理现有文件 {filePath} 时出错: {ex.Message}");
                 }
             }
             
-            Console.WriteLine($"??? {allFiles.Length} ?????");
+            Console.WriteLine($"已处理 {allFiles.Length} 个现有文件");
         }
 
         protected virtual void Dispose(bool disposing)

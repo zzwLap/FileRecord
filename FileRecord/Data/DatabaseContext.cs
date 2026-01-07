@@ -170,6 +170,19 @@ namespace FileRecord.Data
             command.ExecuteNonQuery();
         }
         
+        public void MarkFileAsUnuploaded(int fileId)
+        {
+            using var connection = new SqliteConnection(_connectionString);
+            connection.Open();
+            
+            var updateSql = "UPDATE FileInfos SET IsUploaded = 0, UploadTime = NULL WHERE Id = @Id";
+            
+            using var command = new SqliteCommand(updateSql, connection);
+            command.Parameters.AddWithValue("@Id", fileId);
+            
+            command.ExecuteNonQuery();
+        }
+        
         public string GetConnectionString()
         {
             return _connectionString;

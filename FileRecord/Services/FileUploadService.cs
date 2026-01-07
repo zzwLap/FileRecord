@@ -9,143 +9,61 @@ namespace FileRecord.Services.Upload
     public class FileUploadService
     {
         private readonly DatabaseContext _databaseContext;
-        private readonly string _backupDirectory;
+        private readonly UploadTaskManager _taskManager;
         
-        public FileUploadService(DatabaseContext databaseContext, string backupDirectory = "bak")
+        public FileUploadService(DatabaseContext databaseContext, UploadTaskManager taskManager, string backupDirectory = "bak")
         {
             _databaseContext = databaseContext;
-            _backupDirectory = backupDirectory;
-            
-            // ????????
-            if (!Directory.Exists(_backupDirectory))
-            {
-                Directory.CreateDirectory(_backupDirectory);
-            }
+            _taskManager = taskManager;
         }
         
-        public bool UploadFile(FileInfoModel fileInfo)
+        public void EnqueueFileForUpload(int fileId, string filePath)
+        {
+            _taskManager.EnqueueUpload(fileId, filePath);
+        }
+        
+        public void EnqueueNewOrModifiedFile(string filePath)
         {
             try
             {
-                // ?????????
-                if (!File.Exists(fileInfo.FilePath))
-                {
-                    Console.WriteLine($"??????: {fileInfo.FilePath}");
-                    return false;
-                }
-                
-                // ?????? - ??????????????
-                string relativePath = GetRelativePath(fileInfo.FilePath, fileInfo.DirectoryPath);
-                string targetDirectory = Path.Combine(_backupDirectory, fileInfo.DirectoryPath.Replace(Path.GetPathRoot(fileInfo.DirectoryPath) ?? "", "").TrimStart('\\', '/'));
-                
-                if (!Directory.Exists(targetDirectory))
-                {
-                    Directory.CreateDirectory(targetDirectory);
-                }
-                
-                string targetPath = Path.Combine(targetDirectory, fileInfo.FileName);
-                
-                // ?????????
-                File.Copy(fileInfo.FilePath, targetPath, true);
-                
-                // ???????????
-                _databaseContext.MarkFileAsUploaded(fileInfo.Id, DateTime.Now);
-                
-                Console.WriteLine($"??????: {fileInfo.FileName} -> {targetPath}");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"??????? {fileInfo.FileName}: {ex.Message}");
-                return false;
-            }
-        }
-        
-        public void UploadAllUnuploadedFiles()
-        {
-            Console.WriteLine("????????????...");
-            
-            var unuploadedFiles = _databaseContext.GetUnuploadedFiles();
-            int totalFiles = unuploadedFiles.Count;
-            int successCount = 0;
-            int failCount = 0;
-            
-            Console.WriteLine($"?? {totalFiles} ???????");
-            
-            foreach (var fileInfo in unuploadedFiles)
-            {
-                if (UploadFile(fileInfo))
-                {
-                    successCount++;
-                }
-                else
-                {
-                    failCount++;
-                }
-            }
-            
-            Console.WriteLine($"????: {successCount} ??, {failCount} ??, ?? {totalFiles} ???");
-        }
-        
-        public void UploadNewOrModifiedFile(string filePath)
-        {
-            try
-            {
-                // ?????????????
+                // 检查文件是否已经在数据库中
                 bool fileExistsInDb = _databaseContext.FileExists(filePath);
                 
                 if (!fileExistsInDb)
                 {
-                    // ??????????????????
+                    // 如果文件不在数据库中，先添加到数据库
                     var fileInfo = new FileInfoModel(filePath);
                     _databaseContext.InsertFileInfo(fileInfo);
                 }
                 
-                // ???????????
-                // ???????????????FileInfoModel????????????
-                var fileInfoForUpload = new FileInfoModel(filePath);
+                // 从数据库获取完整的文件信息，包括ID
+                var fileInfoFromDb = GetFileInfoByPath(filePath);
                 
-                // ????????????????ID
-                var existingFileInfos = _databaseContext.GetUnuploadedFiles();
-                var fileInfoInDb = existingFileInfos.Find(f => f.FilePath == filePath);
-                
-                if (fileInfoInDb != null)
+                if (fileInfoFromDb != null)
                 {
-                    UploadFile(fileInfoInDb);
-                }
-                else
-                {
-                    // ??????????????????????????ID
-                    var allFiles = GetFileInfoByPath(filePath);
-                    if (allFiles != null && allFiles.Id > 0)
+                    // 如果文件已上传但发生了变化，标记为未上传状态，以便可以重新上传
+                    if (fileInfoFromDb.IsUploaded)
                     {
-                        // ??????FileInfoModel????
-                        allFiles.IsUploaded = false; // ???????????
-                        _databaseContext.InsertFileInfo(allFiles); // ???????
-                        UploadFile(allFiles);
+                        _databaseContext.MarkFileAsUnuploaded(fileInfoFromDb.Id);
+                        Console.WriteLine($"文件已修改，需要重新上传: {filePath}");
                     }
+                    
+                    // 将文件加入上传队列
+                    _taskManager.EnqueueUpload(fileInfoFromDb.Id, fileInfoFromDb.FilePath);
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"????????????? {filePath}: {ex.Message}");
+                Console.WriteLine($"处理新文件或修改文件时出错 {filePath}: {ex.Message}");
             }
         }
         
-        // ???????????
-        private string GetRelativePath(string fullPath, string basePath)
+        public void EnqueueAllUnuploadedFiles()
         {
-            if (string.IsNullOrEmpty(basePath))
-                return Path.GetFileName(fullPath);
-                
-            Uri baseUri = new Uri(basePath.EndsWith(Path.DirectorySeparatorChar.ToString()) ? basePath : basePath + Path.DirectorySeparatorChar);
-            Uri fullUri = new Uri(fullPath);
-            
-            Uri relativeUri = baseUri.MakeRelativeUri(fullUri);
-            return Uri.UnescapeDataString(relativeUri.ToString()).Replace('/', Path.DirectorySeparatorChar);
+            _taskManager.EnqueueUnuploadedFiles();
         }
         
-        // ???????????????
+        // 从数据库获取特定路径的文件信息
         private FileInfoModel? GetFileInfoByPath(string filePath)
         {
             using var connection = new Microsoft.Data.Sqlite.SqliteConnection(_databaseContext.GetConnectionString());
