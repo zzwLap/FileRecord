@@ -4,6 +4,7 @@ using FileRecord.Services;
 using FileRecord.Services.Upload;
 using FileRecord.Tools;
 using FileRecord.Utils;
+using FileRecord.Tests;
 
 // 检查命令行参数
 if (args.Length > 0 && args[0] == "--view")
@@ -17,6 +18,18 @@ else if (args.Length > 0 && args[0] == "--demo")
 {
     // 运行通配符规则演示
     WildcardRuleExample.DemonstrateWildcardRules();
+    return;
+}
+else if (args.Length > 0 && args[0] == "--test")
+{
+    // 运行基本过滤功能测试 - 此功能已移至单独的测试项目
+    Console.WriteLine("基本过滤功能测试 - 请使用 --custom-test 参数运行自定义过滤测试");
+    return;
+}
+else if (args.Length > 0 && args[0] == "--custom-test")
+{
+    // 运行自定义过滤功能测试
+    FileRecord.Tests.CustomFilterTest.TestCustomFiltering();
     return;
 }
 

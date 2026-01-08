@@ -1,11 +1,30 @@
 using System;
 using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace FileRecord.Utils
 {
     /// <summary>
     /// 文件过滤规则类
+    /// 提供多种过滤选项，包括扩展名、文件大小、文件名模式等。
+    /// 还支持通过 CustomFilterFunction 属性添加自定义过滤逻辑。
+    /// 
+    /// 使用示例:
+    /// // 基本用法
+    /// var rule = new FileFilterRule
+    /// {
+    ///     AllowedExtensions = new[] { ".txt", ".pdf" },
+    ///     MaxFileSize = 1024 * 1024 // 1MB
+    /// };
+    /// bool allowed = rule.IsFileAllowed("test.txt", 500);
+    /// 
+    /// // 使用自定义过滤函数
+    /// var customRule = new FileFilterRule
+    /// {
+    ///     CustomFilterFunction = (filePath) => !filePath.Contains("temp")
+    /// };
+    /// bool customAllowed = customRule.IsFileAllowed("permanent.txt", 500);
     /// </summary>
     public class FileFilterRule
     {
@@ -49,6 +68,14 @@ namespace FileRecord.Utils
         public bool EnableTempFileFiltering { get; set; } = true;
 
         /// <summary>
+        /// 自定义过滤函数，接受文件路径作为参数，返回布尔值表示是否允许该文件
+        /// 当此属性不为null时，将优先执行自定义过滤逻辑
+        /// </summary>
+        public Func<string, bool>? CustomFilterFunction { get; set; } = null;
+
+
+
+        /// <summary>
         /// 检查文件是否符合过滤规则
         /// </summary>
         /// <param name="filePath">文件路径</param>
@@ -56,6 +83,18 @@ namespace FileRecord.Utils
         /// <returns>如果文件符合规则返回true，否则返回false</returns>
         public bool IsFileAllowed(string filePath, long fileSize = 0)
         {
+            // 首先执行自定义过滤函数（如果提供了的话）
+            if (CustomFilterFunction != null)
+            {
+                bool customResult = CustomFilterFunction!(filePath);
+                // 如果自定义过滤函数返回false，则直接拒绝文件
+                if (!customResult)
+                {
+                    return false;
+                }
+                // 如果自定义过滤函数返回true，则继续执行其他过滤规则
+            }
+
             // 检查文件大小
             if (fileSize < MinFileSize || fileSize > MaxFileSize)
             {
@@ -183,5 +222,7 @@ namespace FileRecord.Utils
 
             return true; // 如果没有设置允许的扩展名，则默认所有扩展名都被允许
         }
+
+
     }
 }
