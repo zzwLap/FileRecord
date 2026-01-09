@@ -39,7 +39,7 @@ namespace FileRecord.Data
             using var command = new SqliteCommand(createTableSql, connection);
             command.ExecuteNonQuery();
             
-            // ?????????
+            // 检查表结构
             var alterTableSql = @"
                 PRAGMA table_info(FileInfos)";
             
@@ -63,7 +63,7 @@ namespace FileRecord.Data
             }
             reader.Close();
             
-            // ??IsUploaded???????
+            // 如果没有IsUploaded列则添加
             if (!hasIsUploaded)
             {
                 var addIsUploadedColumnSql = "ALTER TABLE FileInfos ADD COLUMN IsUploaded INTEGER NOT NULL DEFAULT 0";
@@ -71,7 +71,7 @@ namespace FileRecord.Data
                 addIsUploadedCommand.ExecuteNonQuery();
             }
             
-            // ??UploadTime???????
+            // 如果没有UploadTime列则添加
             if (!hasUploadTime)
             {
                 var addUploadTimeColumnSql = "ALTER TABLE FileInfos ADD COLUMN UploadTime TEXT";
@@ -79,7 +79,7 @@ namespace FileRecord.Data
                 addUploadTimeCommand.ExecuteNonQuery();
             }
             
-            // ??MD5Hash???????
+            // 如果没有MD5Hash列则添加
             if (!hasMD5Hash)
             {
                 var addMD5HashColumnSql = "ALTER TABLE FileInfos ADD COLUMN MD5Hash TEXT";
@@ -87,7 +87,7 @@ namespace FileRecord.Data
                 addMD5HashCommand.ExecuteNonQuery();
             }
             
-            // ??IsDeleted???????
+            // 如果没有IsDeleted列则添加
             if (!hasIsDeleted)
             {
                 var addIsDeletedColumnSql = "ALTER TABLE FileInfos ADD COLUMN IsDeleted INTEGER NOT NULL DEFAULT 0";
@@ -95,7 +95,7 @@ namespace FileRecord.Data
                 addIsDeletedCommand.ExecuteNonQuery();
             }
             
-            // ??MonitorGroupId???????
+            // 如果没有MonitorGroupId列则添加
             if (!hasMonitorGroupId)
             {
                 var addMonitorGroupIdColumnSql = "ALTER TABLE FileInfos ADD COLUMN MonitorGroupId TEXT";
