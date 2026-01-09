@@ -39,6 +39,12 @@ else if (args.Length > 0 && args[0] == "--import")
     await RunDataImportAsync();
     return;
 }
+else if (args.Length > 0 && args[0] == "--detect-missing")
+{
+    // 运行缺失文件检测功能
+    await RunMissingFileDetectionAsync();
+    return;
+}
 
 // 创建数据库上下文
 var databaseContext = new DatabaseContext();
@@ -347,4 +353,273 @@ static async Task RunDataImportAsync()
             Console.WriteLine($"  - {errorMsg}");
         }
     }
+}
+
+static async Task RunMissingFileDetectionAsync()
+{
+    var databaseContext = new DatabaseContext();
+    var detector = new FileRecord.Tools.MissingFileDetector(databaseContext);
+    
+    Console.WriteLine("=== 缺失文件检测功能 ===");
+    Console.WriteLine("请输入要扫描的目录路径，多个路径用分号(;)分隔: ");
+    string folderPathsInput = Console.ReadLine() ?? "";
+    
+    if (string.IsNullOrWhiteSpace(folderPathsInput))
+    {
+        Console.WriteLine("目录路径不能为空！");
+        return;
+    }
+    
+    // 解析路径列表
+    string[] folderPaths = folderPathsInput.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    
+    // 验证路径是否存在
+    var validPaths = new List<string>();
+    foreach (var path in folderPaths)
+    {
+        if (Directory.Exists(path))
+        {
+            validPaths.Add(path);
+        }
+        else
+        {
+            Console.WriteLine($"警告: 路径不存在，跳过: {path}");
+        }
+    }
+    
+    if (validPaths.Count == 0)
+    {
+        Console.WriteLine("没有有效的目录路径！");
+        return;
+    }
+    
+    // 询问是否要应用文件过滤规则
+    Console.WriteLine("是否要应用文件过滤规则？(y/n，默认为n): ");
+    string? useFilterInput = Console.ReadLine();
+    FileRecord.Utils.FileFilterRule? filterRule = null;
+    
+    if (!string.IsNullOrEmpty(useFilterInput) && useFilterInput.ToLower().StartsWith("y"))
+    {
+        Console.WriteLine("选择过滤规则类型:");
+        Console.WriteLine("1. 文档文件 (.doc, .pdf, .txt等)");
+        Console.WriteLine("2. 图片文件 (.jpg, .png, .gif等)");
+        Console.WriteLine("3. 视频文件 (.mp4, .avi, .mkv等)");
+        Console.WriteLine("4. 音频文件 (.mp3, .wav, .flac等)");
+        Console.WriteLine("5. 代码文件 (.cs, .js, .py等)");
+        Console.WriteLine("6. 自定义扩展名");
+        Console.WriteLine("7. 按文件大小过滤");
+        Console.WriteLine("8. 通配符模式 (*a.*, *.txt, test* 等)");
+        Console.WriteLine("9. 包含特定字符 (如包含字母 a 的文件)");
+        Console.Write("请选择 (1-9, 默认为全部文件): ");
+        
+        string? filterChoice = Console.ReadLine();
+        
+        switch (filterChoice)
+        {
+            case "1":
+                filterRule = FileRecord.Utils.FileFilterRuleFactory.CreateDocumentRule();
+                Console.WriteLine($"已选择文档文件过滤规则");
+                break;
+            case "2":
+                filterRule = FileRecord.Utils.FileFilterRuleFactory.CreateImageRule();
+                Console.WriteLine($"已选择图片文件过滤规则");
+                break;
+            case "3":
+                filterRule = FileRecord.Utils.FileFilterRuleFactory.CreateVideoRule();
+                Console.WriteLine($"已选择视频文件过滤规则");
+                break;
+            case "4":
+                filterRule = FileRecord.Utils.FileFilterRuleFactory.CreateAudioRule();
+                Console.WriteLine($"已选择音频文件过滤规则");
+                break;
+            case "5":
+                filterRule = FileRecord.Utils.FileFilterRuleFactory.CreateCodeRule();
+                Console.WriteLine($"已选择代码文件过滤规则");
+                break;
+            case "6":
+                Console.Write("请输入允许的扩展名，用逗号分隔 (例如: .txt,.pdf,.doc): ");
+                string? customExtsInput = Console.ReadLine();
+                if (!string.IsNullOrWhiteSpace(customExtsInput))
+                {
+                    string[] customExts = customExtsInput.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    filterRule = FileRecord.Utils.FileFilterRuleFactory.CreateCustomRule(customExts);
+                    Console.WriteLine($"已选择自定义扩展名过滤规则");
+                }
+                break;
+            case "7":
+                Console.Write("请输入最大文件大小 (MB): ");
+                if (double.TryParse(Console.ReadLine(), out double maxMb) && maxMb > 0)
+                {
+                    long maxSize = (long)(maxMb * 1024 * 1024);
+                    filterRule = FileRecord.Utils.FileFilterRuleFactory.CreateSizeRule(0, maxSize);
+                    Console.WriteLine($"已选择大小限制过滤规则 (最大 {maxMb} MB)");
+                }
+                break;
+            case "8":
+                Console.Write("请输入通配符模式 (例如: *a.*, *.txt, test*, 等): ");
+                string? wildcardPattern = Console.ReadLine();
+                if (!string.IsNullOrWhiteSpace(wildcardPattern))
+                {
+                    filterRule = FileRecord.Utils.FileFilterRuleFactory.CreateWildcardRule(wildcardPattern);
+                    Console.WriteLine($"已选择通配符过滤规则: {wildcardPattern}");
+                }
+                break;
+            case "9":
+                Console.Write("请输入要匹配的字符 (例如: a, b, c 等): ");
+                string? charInput = Console.ReadLine();
+                if (!string.IsNullOrWhiteSpace(charInput) && charInput.Length == 1)
+                {
+                    filterRule = FileRecord.Utils.FileFilterRuleFactory.CreateCharacterInNameRule(charInput[0]);
+                    Console.WriteLine($"已选择字符匹配过滤规则: 包含字符 '{charInput[0]}'");
+                }
+                break;
+            default:
+                Console.WriteLine($"使用默认规则（所有文件）");
+                break;
+        }
+    }
+    
+    Console.WriteLine("选择检测模式:");
+    Console.WriteLine("1. 检测当天(今天00:00至今)未记录的文件");
+    Console.WriteLine("2. 检测最近24小时未记录的文件");
+    Console.WriteLine("3. 检测指定时间范围内的未记录文件");
+    Console.WriteLine("4. 检测所有未记录的文件");
+    Console.Write("请选择 (1-4, 默认为1): ");
+    
+    string? modeInput = Console.ReadLine();
+    List<FileRecord.Tools.UnrecordedFileInfo> missingFiles = new List<FileRecord.Tools.UnrecordedFileInfo>();
+    
+    switch (modeInput)
+    {
+        case "2":
+            // 检测最近24小时
+            var yesterday = DateTime.Now.AddHours(-24);
+            missingFiles = detector.FindMissingFilesInTimeRange(validPaths, yesterday, DateTime.Now, true, filterRule);
+            Console.WriteLine($"正在检测从 {yesterday:yyyy-MM-dd HH:mm:ss} 到现在未记录的文件...");
+            break;
+        
+        case "3":
+            // 检测指定时间范围
+            Console.Write("请输入开始时间 (yyyy-MM-dd 或 yyyy-MM-dd HH:mm:ss 格式): ");
+            string? startTimeStr = Console.ReadLine();
+            DateTime startTime = DateTime.Now;
+            if (!DateTime.TryParse(startTimeStr, out startTime))
+            {
+                Console.WriteLine("开始时间格式错误！");
+                return;
+            }
+            
+            Console.Write("请输入结束时间 (yyyy-MM-dd 或 yyyy-MM-dd HH:mm:ss 格式): ");
+            string? endTimeStr = Console.ReadLine();
+            DateTime endTime = DateTime.Now;
+            if (!DateTime.TryParse(endTimeStr, out endTime))
+            {
+                Console.WriteLine("结束时间格式错误！");
+                return;
+            }
+            
+            missingFiles = detector.FindMissingFilesInTimeRange(validPaths, startTime, endTime, true, filterRule);
+            Console.WriteLine($"正在检测从 {startTime:yyyy-MM-dd HH:mm:ss} 到 {endTime:yyyy-MM-dd HH:mm:ss} 未记录的文件...");
+            break;
+            
+        case "4":
+            // 检测所有未记录的文件
+            missingFiles = detector.FindAllMissingFiles(validPaths, true, filterRule);
+            Console.WriteLine("正在检测所有未记录的文件...");
+            break;
+            
+        case "1":
+        default:
+            // 检测当天
+            missingFiles = detector.FindMissingFilesToday(validPaths, true, filterRule);
+            Console.WriteLine($"正在检测今天(从 {DateTime.Today:yyyy-MM-dd} 00:00:00)未记录的文件...");
+            break;
+    }
+    
+    // 显示结果
+    detector.DisplayMissingFiles(missingFiles);
+    detector.DisplayStatistics(missingFiles);
+    
+    // 询问是否要导入这些文件
+    if (missingFiles.Count > 0)
+    {
+        Console.WriteLine($"\n发现 {missingFiles.Count} 个未记录的文件。是否要将它们导入到数据库？(y/n): ");
+        string? importInput = Console.ReadLine();
+        
+        if (!string.IsNullOrEmpty(importInput) && importInput.ToLower().StartsWith("y"))
+        {
+            await ImportMissingFilesAsync(databaseContext, missingFiles);
+        }
+    }
+}
+
+static async Task ImportMissingFilesAsync(DatabaseContext databaseContext, List<FileRecord.Tools.UnrecordedFileInfo> missingFiles)
+{
+    var taskManager = new UploadTaskManager(databaseContext);
+    var uploadService = new FileRecord.Services.Upload.FileUploadService(databaseContext, taskManager);
+    var importService = new FileRecord.Services.DataImportService(databaseContext, uploadService);
+    
+    Console.WriteLine("\n开始导入未记录的文件...");
+    
+    var criteria = new FileRecord.Services.DataImportService.ImportCriteria();
+    criteria.MonitorGroupId = "missing_detected"; // 使用特殊监控组标识这些是检测到的缺失文件
+    
+    // 将未记录的文件路径按目录分组
+    var directoryGroups = missingFiles.GroupBy(f => Path.GetDirectoryName(f.FilePath)).ToList();
+    
+    int totalImported = 0;
+    foreach (var group in directoryGroups)
+    {
+        var groupFiles = group.ToList();
+        Console.WriteLine($"正在处理目录: {group.Key} ({groupFiles.Count} 个文件)");
+        
+        // 创建临时的导入服务，只处理当前目录的文件
+        var tempCriteria = new FileRecord.Services.DataImportService.ImportCriteria();
+        tempCriteria.MonitorGroupId = "missing_detected";
+        
+        // 由于ImportDataAsync方法是为整个目录设计的，我们需要为每个文件单独创建记录
+        foreach (var fileInfo in groupFiles)
+        {
+            try
+            {
+                var fileInfoModel = new FileRecord.Models.FileInfoModel(fileInfo.FilePath)
+                {
+                    MonitorGroupId = "missing_detected",
+                    IsDeleted = false,
+                    IsUploaded = false,
+                    UploadTime = null
+                };
+                
+                // 计算MD5值
+                try
+                {
+                    fileInfoModel.MD5Hash = FileRecord.Utils.FileUtils.CalculateMD5(fileInfo.FilePath);
+                }
+                catch (Exception md5Ex)
+                {
+                    Console.WriteLine($"计算MD5失败 {fileInfo.FilePath}: {md5Ex.Message}");
+                    fileInfoModel.MD5Hash = string.Empty;
+                }
+                
+                // 插入数据库
+                databaseContext.InsertFileInfo(fileInfoModel);
+                totalImported++;
+                
+                if (totalImported % 50 == 0)
+                {
+                    Console.WriteLine($"已导入 {totalImported} 个文件...");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"导入文件失败 {fileInfo.FilePath}: {ex.Message}");
+            }
+        }
+    }
+    
+    Console.WriteLine($"\n导入完成！共导入 {totalImported} 个文件。");
+    
+    // 将新导入的文件添加到上传队列
+    Console.WriteLine("将新导入的文件添加到上传队列...");
+    uploadService.EnqueueAllUnuploadedFiles();
 }

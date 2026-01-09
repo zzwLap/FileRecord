@@ -265,5 +265,75 @@ namespace FileRecord.Data
         {
             return _connectionString;
         }
+        
+        /// <summary>
+        /// 获取指定时间范围内的文件信息
+        /// </summary>
+        /// <param name="startTime">开始时间</param>
+        /// <param name="endTime">结束时间</param>
+        /// <returns>文件信息列表</returns>
+        public List<FileInfoModel> GetFileInfosInTimeRange(DateTime startTime, DateTime endTime)
+        {
+            var files = new List<FileInfoModel>();
+            
+            using var connection = new SqliteConnection(_connectionString);
+            connection.Open();
+            
+            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, MonitorGroupId, IsUploaded, UploadTime, MD5Hash, IsDeleted FROM FileInfos WHERE datetime(ModifiedTime) BETWEEN @StartTime AND @EndTime ORDER BY ModifiedTime DESC";
+            
+            using var command = new SqliteCommand(selectSql, connection);
+            command.Parameters.AddWithValue("@StartTime", startTime.ToString("yyyy-MM-dd HH:mm:ss"));
+            command.Parameters.AddWithValue("@EndTime", endTime.ToString("yyyy-MM-dd HH:mm:ss"));
+            
+            using var reader = command.ExecuteReader();
+            
+            while (reader.Read())
+            {
+                var fileInfo = new FileInfoModel
+                {
+                    Id = reader.GetInt32(0),
+                    FileName = reader.GetString(1),
+                    FilePath = reader.GetString(2),
+                    FileSize = reader.GetInt64(3),
+                    CreatedTime = DateTime.Parse(reader.GetString(4)),
+                    ModifiedTime = DateTime.Parse(reader.GetString(5)),
+                    Extension = reader.GetString(6),
+                    DirectoryPath = reader.GetString(7),
+                    MonitorGroupId = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                    IsUploaded = reader.GetInt32(9) == 1,
+                    UploadTime = reader.IsDBNull(10) ? (DateTime?)null : DateTime.Parse(reader.GetString(10)),
+                    MD5Hash = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
+                    IsDeleted = reader.GetInt32(12) == 1
+                };
+                
+                files.Add(fileInfo);
+            }
+            
+            return files;
+        }
+        
+        /// <summary>
+        /// 获取所有文件路径
+        /// </summary>
+        /// <returns>文件路径列表</returns>
+        public List<string> GetAllFilePaths()
+        {
+            var filePaths = new List<string>();
+            
+            using var connection = new SqliteConnection(_connectionString);
+            connection.Open();
+            
+            var selectSql = "SELECT FilePath FROM FileInfos ORDER BY FilePath ASC";
+            
+            using var command = new SqliteCommand(selectSql, connection);
+            using var reader = command.ExecuteReader();
+            
+            while (reader.Read())
+            {
+                filePaths.Add(reader.GetString(0));
+            }
+            
+            return filePaths;
+        }
     }
 }
