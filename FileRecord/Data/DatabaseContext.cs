@@ -335,5 +335,43 @@ namespace FileRecord.Data
             
             return filePaths;
         }
+        
+        /// <summary>
+        /// 批量插入文件信息
+        /// </summary>
+        /// <param name="fileInfos">文件信息列表</param>
+        public void BatchInsertFileInfos(List<FileInfoModel> fileInfos)
+        {
+            using var connection = new SqliteConnection(_connectionString);
+            connection.Open();
+            
+            using var transaction = connection.BeginTransaction();
+            
+            var insertSql = @"
+                INSERT OR REPLACE INTO FileInfos 
+                (FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, MonitorGroupId, IsUploaded, UploadTime, MD5Hash, IsDeleted) 
+                VALUES (@FileName, @FilePath, @FileSize, @CreatedTime, @ModifiedTime, @Extension, @DirectoryPath, @MonitorGroupId, @IsUploaded, @UploadTime, @MD5Hash, @IsDeleted)";
+            
+            foreach (var fileInfo in fileInfos)
+            {
+                using var command = new SqliteCommand(insertSql, connection, transaction);
+                command.Parameters.AddWithValue("@FileName", fileInfo.FileName);
+                command.Parameters.AddWithValue("@FilePath", fileInfo.FilePath);
+                command.Parameters.AddWithValue("@FileSize", fileInfo.FileSize);
+                command.Parameters.AddWithValue("@CreatedTime", fileInfo.CreatedTime.ToString("yyyy-MM-dd HH:mm:ss"));
+                command.Parameters.AddWithValue("@ModifiedTime", fileInfo.ModifiedTime.ToString("yyyy-MM-dd HH:mm:ss"));
+                command.Parameters.AddWithValue("@Extension", fileInfo.Extension);
+                command.Parameters.AddWithValue("@DirectoryPath", fileInfo.DirectoryPath);
+                command.Parameters.AddWithValue("@MonitorGroupId", fileInfo.MonitorGroupId);
+                command.Parameters.AddWithValue("@IsUploaded", fileInfo.IsUploaded ? 1 : 0);
+                command.Parameters.AddWithValue("@UploadTime", fileInfo.UploadTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? (object)DBNull.Value);
+                command.Parameters.AddWithValue("@MD5Hash", fileInfo.MD5Hash);
+                command.Parameters.AddWithValue("@IsDeleted", fileInfo.IsDeleted ? 1 : 0);
+                
+                command.ExecuteNonQuery();
+            }
+            
+            transaction.Commit();
+        }
     }
 }

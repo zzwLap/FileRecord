@@ -18,9 +18,9 @@ namespace FileRecord.Services
     public class DataImportService
     {
         private readonly DatabaseContext _databaseContext;
-        private readonly FileRecord.Services.Upload.FileUploadService _uploadService;
+        private readonly FileUploadService _uploadService;
 
-        public DataImportService(DatabaseContext databaseContext, FileRecord.Services.Upload.FileUploadService uploadService)
+        public DataImportService(DatabaseContext databaseContext, FileUploadService uploadService)
         {
             _databaseContext = databaseContext;
             _uploadService = uploadService;
@@ -118,11 +118,17 @@ namespace FileRecord.Services
             Console.WriteLine($"开始导入数据，根目录: {rootDirectory}");
             
             var searchOption = criteria.IncludeSubdirectories ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-            var allFiles = Directory.GetFiles(rootDirectory, "*", searchOption);
+            var allFiles = Directory.EnumerateFiles(rootDirectory, "*", searchOption);
 
-            Console.WriteLine($"扫描到 {allFiles.Length} 个文件，开始筛选...");
+            // 转换为List以获取计数
+            var fileList = allFiles.ToList();
+            Console.WriteLine($"扫描到 {fileList.Count} 个文件，开始筛选...");
+            
+            // 用于批量插入的列表
+            var batchFileInfos = new List<FileInfoModel>();
+            var lockObject = new object(); // 用于同步批量列表的访问
 
-            foreach (var filePath in allFiles)
+            foreach (var filePath in fileList)
             {
                 result.TotalFilesScanned++;
 
@@ -165,26 +171,51 @@ namespace FileRecord.Services
                         fileInfoModel.MD5Hash = string.Empty;
                     }
 
-                    // 插入或更新数据库记录
-                    _databaseContext.InsertFileInfo(fileInfoModel);
-                    result.FilesImported++;
-
-                    if (result.FilesImported % 100 == 0)
+                    // 将文件信息添加到批量列表中
+                    lock (lockObject)
                     {
-                        Console.WriteLine($"已导入 {result.FilesImported} 个文件...");
+                        batchFileInfos.Add(fileInfoModel);
+                        result.FilesImported++;
+
+                        // 每达到批量大小时批量插入一次
+                        if (batchFileInfos.Count >= FileRecord.Config.AppConfig.DefaultBatchSize)
+                        {
+                            _databaseContext.BatchInsertFileInfos(batchFileInfos);
+                            batchFileInfos.Clear(); // 清空批量列表
+                            if (result.FilesImported % FileRecord.Config.AppConfig.ProgressReportInterval == 0)
+                            {
+                                Console.WriteLine($"已导入 {result.FilesImported} 个文件...");
+                            }
+                        }
                     }
                 }
-                catch (UnauthorizedAccessException)
+                catch (UnauthorizedAccessException ex)
                 {
                     result.FilesFailed++;
-                    result.ErrorMessages.Add($"无权限访问文件: {filePath}");
-                    Console.WriteLine($"无权限访问文件: {filePath}");
+                    result.ErrorMessages.Add($"无权限访问文件: {filePath}, 错误: {ex.Message}");
+                    Console.WriteLine($"无权限访问文件: {filePath}, 错误: {ex.Message}");
+                }
+                catch (IOException ex)
+                {
+                    result.FilesFailed++;
+                    result.ErrorMessages.Add($"文件I/O错误 {filePath}: {ex.Message}");
+                    Console.WriteLine($"文件I/O错误 {filePath}: {ex.Message}");
                 }
                 catch (Exception ex)
                 {
                     result.FilesFailed++;
                     result.ErrorMessages.Add($"处理文件失败 {filePath}: {ex.Message}");
                     Console.WriteLine($"处理文件失败 {filePath}: {ex.Message}");
+                }
+            }
+
+            // 处理剩余的文件（如果有的话）
+            lock (lockObject)
+            {
+                if (batchFileInfos.Count > 0)
+                {
+                    _databaseContext.BatchInsertFileInfos(batchFileInfos);
+                    batchFileInfos.Clear();
                 }
             }
 
@@ -208,7 +239,7 @@ namespace FileRecord.Services
         /// <param name="parallelProcessing">是否启用并行处理</param>
         /// <param name="batchSize">批量处理大小</param>
         /// <returns>导入结果</returns>
-        public async Task<ImportResult> ImportDataAsync(string rootDirectory, ImportCriteria criteria, bool parallelProcessing = true, int batchSize = 100)
+        public async Task<ImportResult> ImportDataAsync(string rootDirectory, ImportCriteria criteria, bool parallelProcessing = true, int batchSize = FileRecord.Config.AppConfig.DefaultBatchSize)
         {
             var result = new ImportResult();
             
@@ -221,12 +252,14 @@ namespace FileRecord.Services
             Console.WriteLine($"开始导入数据，根目录: {rootDirectory}");
             
             var searchOption = criteria.IncludeSubdirectories ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-            var allFiles = Directory.GetFiles(rootDirectory, "*", searchOption);
+            var allFiles = Directory.EnumerateFiles(rootDirectory, "*", searchOption);
 
-            Console.WriteLine($"扫描到 {allFiles.Length} 个文件，开始筛选...");
+            // 转换为数组以获取计数并传递给预筛选方法
+            var fileArray = allFiles.ToArray();
+            Console.WriteLine($"扫描到 {fileArray.Length} 个文件，开始筛选...");
 
             // 预筛选：根据文件名快速筛选，避免不必要的详细检查
-            var filteredFiles = PreFilterFiles(allFiles, criteria);
+            var filteredFiles = PreFilterFiles(fileArray, criteria);
             
             Console.WriteLine($"预筛选后剩余 {filteredFiles.Count} 个文件");
             
@@ -374,9 +407,13 @@ namespace FileRecord.Services
 
                         allFileInfoModels.Add(fileInfoModel);
                     }
-                    catch (UnauthorizedAccessException)
+                    catch (UnauthorizedAccessException ex)
                     {
-                        failedFiles.Add((filePath, $"无权限访问文件: {filePath}"));
+                        failedFiles.Add((filePath, $"无权限访问文件: {filePath}, 错误: {ex.Message}"));
+                    }
+                    catch (IOException ex)
+                    {
+                        failedFiles.Add((filePath, $"文件I/O错误 {filePath}: {ex.Message}"));
                     }
                     catch (Exception ex)
                     {
@@ -401,7 +438,7 @@ namespace FileRecord.Services
             var fileInfoList = allFileInfoModels.ToList();
             if (fileInfoList.Any())
             {
-                BatchInsertToFileDatabase(fileInfoList, batchSize);
+                await BatchInsertToFileDatabaseAsync(fileInfoList, batchSize);
             }
         }
 
@@ -457,17 +494,26 @@ namespace FileRecord.Services
                     // 当批次达到指定大小时，批量插入数据库
                     if (batch.Count >= batchSize)
                     {
-                        BatchInsertToFileDatabase(batch, batchSize);
+                        await BatchInsertToFileDatabaseAsync(batch, batchSize);
                         batch.Clear();
                         
-                        Console.WriteLine($"已批量处理 {result.FilesImported} 个文件...");
+                        if (result.FilesImported % FileRecord.Config.AppConfig.ProgressReportInterval == 0)
+                        {
+                            Console.WriteLine($"已批量处理 {result.FilesImported} 个文件...");
+                        }
                     }
                 }
-                catch (UnauthorizedAccessException)
+                catch (UnauthorizedAccessException ex)
                 {
                     result.FilesFailed++;
-                    result.ErrorMessages.Add($"无权限访问文件: {filePath}");
-                    Console.WriteLine($"无权限访问文件: {filePath}");
+                    result.ErrorMessages.Add($"无权限访问文件: {filePath}, 错误: {ex.Message}");
+                    Console.WriteLine($"无权限访问文件: {filePath}, 错误: {ex.Message}");
+                }
+                catch (IOException ex)
+                {
+                    result.FilesFailed++;
+                    result.ErrorMessages.Add($"文件I/O错误 {filePath}: {ex.Message}");
+                    Console.WriteLine($"文件I/O错误 {filePath}: {ex.Message}");
                 }
                 catch (Exception ex)
                 {
@@ -480,7 +526,7 @@ namespace FileRecord.Services
             // 插入剩余的文件
             if (batch.Any())
             {
-                BatchInsertToFileDatabase(batch, batchSize);
+                await BatchInsertToFileDatabaseAsync(batch, batchSize);
             }
         }
 
@@ -497,10 +543,8 @@ namespace FileRecord.Services
             {
                 var batch = fileInfoList.Skip(i).Take(batchSize).ToList();
                 
-                foreach (var fileInfo in batch)
-                {
-                    _databaseContext.InsertFileInfo(fileInfo);
-                }
+                // 使用数据库的批量插入功能
+                _databaseContext.BatchInsertFileInfos(batch);
             }
         }
 
@@ -714,6 +758,27 @@ namespace FileRecord.Services
                 .Replace("*", ".*"); // * 匹配任意多个字符
             
             return "^" + regex + "$"; // 完整匹配
+        }
+        
+        /// <summary>
+        /// 异步批量插入文件信息到数据库
+        /// </summary>
+        /// <param name="fileInfoList">文件信息列表</param>
+        /// <param name="batchSize">批量大小</param>
+        private async Task BatchInsertToFileDatabaseAsync(List<FileInfoModel> fileInfoList, int batchSize)
+        {
+            if (!fileInfoList.Any()) return;
+            
+            for (int i = 0; i < fileInfoList.Count; i += batchSize)
+            {
+                var batch = fileInfoList.Skip(i).Take(batchSize).ToList();
+                
+                // 使用数据库的批量插入功能
+                _databaseContext.BatchInsertFileInfos(batch);
+                
+                // 在批次之间短暂等待，避免过度占用数据库资源
+                await Task.Delay(1);
+            }
         }
     }
 }

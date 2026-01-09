@@ -65,7 +65,7 @@ namespace FileRecord.Services
                 if (e.ChangeType == WatcherChangeTypes.Created || e.ChangeType == WatcherChangeTypes.Changed)
                 {
                     // 等待文件操作完成，避免文件被占用的问题
-                    Thread.Sleep(100);
+                    Thread.Sleep(FileRecord.Config.AppConfig.FileOperationWaitTimeMs);
                     
                     if (File.Exists(e.FullPath))
                     {
