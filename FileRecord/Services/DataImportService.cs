@@ -80,6 +80,11 @@ namespace FileRecord.Services
             /// 是否跳过临时文件
             /// </summary>
             public bool SkipTemporaryFiles { get; set; } = true;
+            
+            /// <summary>
+            /// 文件过滤规则，如果提供则使用此规则进行额外的过滤
+            /// </summary>
+            public FileFilterRule? FilterRule { get; set; } = null;
         }
 
         /// <summary>
@@ -300,6 +305,16 @@ namespace FileRecord.Services
                 if (criteria.SkipTemporaryFiles && FileUtils.IsTemporaryFile(filePath))
                 {
                     continue;
+                }
+                
+                // 检查FileFilterRule过滤规则
+                if (criteria.FilterRule != null)
+                {
+                    var fileInfo = new FileInfo(filePath);
+                    if (!criteria.FilterRule.IsFileAllowed(filePath, fileInfo.Length))
+                    {
+                        continue; // 不符合过滤规则，跳过
+                    }
                 }
                 
                 // 如果通过了快速筛选条件，则添加到待处理列表
@@ -536,6 +551,15 @@ namespace FileRecord.Services
                     return false;
                 }
             }
+            
+            // 检查FileFilterRule过滤规则
+            if (criteria.FilterRule != null)
+            {
+                if (!criteria.FilterRule.IsFileAllowed(fileInfo.FullName, fileInfo.Length))
+                {
+                    return false;
+                }
+            }
 
             return true;
         }
@@ -608,6 +632,15 @@ namespace FileRecord.Services
                     }
                 }
                 if (!nameMatch)
+                {
+                    return false;
+                }
+            }
+            
+            // 检查FileFilterRule过滤规则
+            if (criteria.FilterRule != null)
+            {
+                if (!criteria.FilterRule.IsFileAllowed(fileInfo.FullName, fileInfo.Length))
                 {
                     return false;
                 }
