@@ -16,6 +16,7 @@ namespace FileRecord.Services.Upload
         public int RetryCount { get; set; } = 0;
         public DateTime? LastAttempt { get; set; } = null;
         public string? ErrorMessage { get; set; }
+        public DateTime? NextRetryTime { get; set; } = null; // 下次重试时间
     }
 
     public class UploadTaskManager
@@ -26,17 +27,29 @@ namespace FileRecord.Services.Upload
         private readonly CancellationTokenSource _cancellationTokenSource;
         private readonly Dictionary<string, IUploadTarget> _uploadTargets;
         private Task? _workerTask;
+        private Task? _schedulerTask;
+        
+        // 用于调度等待重试的任务
+        private readonly PriorityQueue<UploadTask, DateTime> _scheduledRetryQueue;
+        private readonly SemaphoreSlim _queueSemaphore;
         
         // 默认上传目标配置
         private readonly UploadTargetConfig _defaultConfig;
+        // 定时重试间隔（分钟）
+        private readonly int _retryIntervalMinutes = 30;
 
-        public UploadTaskManager(DatabaseContext databaseContext, string backupDirectory = "bak")
+        public UploadTaskManager(DatabaseContext databaseContext, string backupDirectory = "bak", int retryIntervalMinutes = 30)
         {
             _uploadQueue = new ConcurrentQueue<UploadTask>();
             _databaseContext = databaseContext;
             _backupDirectory = backupDirectory;
             _cancellationTokenSource = new CancellationTokenSource();
             _uploadTargets = new Dictionary<string, IUploadTarget>();
+            _retryIntervalMinutes = retryIntervalMinutes;
+            
+            // 初始化调度队列
+            _scheduledRetryQueue = new PriorityQueue<UploadTask, DateTime>();
+            _queueSemaphore = new SemaphoreSlim(1, 1);
             
             // 初始化默认配置
             _defaultConfig = new UploadTargetConfig
@@ -67,7 +80,8 @@ namespace FileRecord.Services.Upload
             {
                 FileId = fileId,
                 FilePath = filePath,
-                MonitorGroupId = fileInfo?.MonitorGroupId ?? "default"
+                MonitorGroupId = fileInfo?.MonitorGroupId ?? "default",
+                NextRetryTime = DateTime.Now // 立即可以重试
             };
             _uploadQueue.Enqueue(task);
         }
@@ -75,6 +89,7 @@ namespace FileRecord.Services.Upload
         public void StartProcessing()
         {
             _workerTask = Task.Run(ProcessUploadQueue);
+            _schedulerTask = Task.Run(ScheduleRetryTasks);
         }
 
         public void StopProcessing()
@@ -82,7 +97,13 @@ namespace FileRecord.Services.Upload
             _cancellationTokenSource.Cancel();
             try
             {
-                _workerTask?.Wait(TimeSpan.FromSeconds(5));
+                var tasks = new List<Task>();
+                if (_workerTask != null) tasks.Add(_workerTask);
+                if (_schedulerTask != null) tasks.Add(_schedulerTask);
+                if (tasks.Count > 0)
+                {
+                    Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(10));
+                }
             }
             catch (AggregateException ex) when (ex.InnerExceptions.Count == 1 && ex.InnerExceptions[0] is TaskCanceledException)
             {
@@ -93,7 +114,75 @@ namespace FileRecord.Services.Upload
                 // 忽略任务取消异常
             }
         }
-
+        
+        // 调度重试任务
+        private async Task ScheduleRetryTasks()
+        {
+            while (!_cancellationTokenSource.Token.IsCancellationRequested)
+            {
+                try
+                {
+                    // 检查是否有到时间的重试任务
+                    await _queueSemaphore.WaitAsync(_cancellationTokenSource.Token);
+                    try
+                    {
+                        // 检查队列头部是否有到达重试时间的任务
+                        if (_scheduledRetryQueue.Count > 0)
+                        {
+                            // 尝试获取队列头部的元素
+                            if (TryPeekQueue(out var task, out var scheduledTime))
+                            {
+                                if (scheduledTime <= DateTime.Now)
+                                {
+                                    // 到达重试时间，将任务移除并加入主队列
+                                    if (_scheduledRetryQueue.TryDequeue(out var dequeuedTask, out _) && dequeuedTask != null)
+                                    {
+                                        _uploadQueue.Enqueue(dequeuedTask);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        _queueSemaphore.Release();
+                    }
+                    
+                    // 等待一段时间再检查
+                    await Task.Delay(1000, _cancellationTokenSource.Token); // 每秒检查一次
+                }
+                catch (OperationCanceledException)
+                {
+                    // 任务被取消，正常退出
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"调度重试任务时发生错误: {ex.Message}");
+                }
+            }
+        }
+        
+        // 尝试查看队列头部元素而不移除它
+        private bool TryPeekQueue(out UploadTask? task, out DateTime priority)
+        {
+            // 由于.NET的PriorityQueue不直接支持Peek方法，我们创建一个临时副本
+            task = null;
+            priority = DateTime.MaxValue;
+            
+            if (_scheduledRetryQueue.Count == 0)
+                return false;
+            
+            // 通过尝试出队再重新入队的方式模拟Peek（仅在临时副本中）
+            var tempQueue = new PriorityQueue<UploadTask, DateTime>(_scheduledRetryQueue.UnorderedItems.Select(x => (x.Element, x.Priority)));
+            if (tempQueue.TryDequeue(out task, out priority))
+            {
+                return true;
+            }
+            
+            return false;
+        }
+        
         private async Task ProcessUploadQueue()
         {
             while (!_cancellationTokenSource.Token.IsCancellationRequested)
@@ -128,31 +217,69 @@ namespace FileRecord.Services.Upload
                 }
                 else
                 {
-                    // 上传失败，如果重试次数未达到上限，则重新加入队列
-                    if (task.RetryCount < 3) // 最大重试3次
+                    // 上传失败，检查是否应该继续重试
+                    if (task.RetryCount < 3) // 最大立即重试3次
                     {
                         Console.WriteLine($"文件上传失败，准备重试({task.RetryCount}/3): {task.FilePath} - {task.ErrorMessage}");
-                        await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, task.RetryCount))); // 指数退避
-                        _uploadQueue.Enqueue(task);
+                        
+                        // 使用指数退避算法
+                        var delay = TimeSpan.FromSeconds(Math.Pow(2, Math.Min(task.RetryCount, 6))); // 最大延迟64秒
+                        task.NextRetryTime = DateTime.Now.Add(delay);
+                        
+                        // 将任务添加到调度队列
+                        await AddToScheduledRetryQueue(task);
                     }
                     else
                     {
-                        Console.WriteLine($"文件上传失败，已达最大重试次数: {task.FilePath} - {task.ErrorMessage}");
+                        // 已达到立即重试的最大次数，启动定时重试机制
+                        Console.WriteLine($"文件上传失败，开始周期性重试({_retryIntervalMinutes}分钟间隔): {task.FilePath} - {task.ErrorMessage}");
+                        
+                        // 设置下次重试时间
+                        task.NextRetryTime = DateTime.Now.AddMinutes(_retryIntervalMinutes);
+                        task.ErrorMessage = $"周期性重试: {task.ErrorMessage}";
+                        
+                        // 将任务添加到调度队列
+                        await AddToScheduledRetryQueue(task);
                     }
                 }
             }
             catch (Exception ex)
             {
                 task.ErrorMessage = ex.Message;
+                
                 if (task.RetryCount < 3)
                 {
                     Console.WriteLine($"文件上传异常，准备重试({task.RetryCount}/3): {task.FilePath} - {ex.Message}");
-                    await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, task.RetryCount)));
-                    _uploadQueue.Enqueue(task);
+                    var delay = TimeSpan.FromSeconds(Math.Pow(2, Math.Min(task.RetryCount, 6)));
+                    task.NextRetryTime = DateTime.Now.Add(delay);
+                    // 将任务添加到调度队列
+                    await AddToScheduledRetryQueue(task);
                 }
                 else
                 {
-                    Console.WriteLine($"文件上传异常，已达最大重试次数: {task.FilePath} - {ex.Message}");
+                    // 开始周期性重试
+                    Console.WriteLine($"文件上传异常，开始周期性重试({_retryIntervalMinutes}分钟间隔): {task.FilePath} - {ex.Message}");
+                    task.NextRetryTime = DateTime.Now.AddMinutes(_retryIntervalMinutes);
+                    task.ErrorMessage = $"周期性重试: {ex.Message}";
+                    // 将任务添加到调度队列
+                    await AddToScheduledRetryQueue(task);
+                }
+            }
+        }
+        
+        // 将任务添加到调度重试队列
+        private async Task AddToScheduledRetryQueue(UploadTask task)
+        {
+            if (task.NextRetryTime.HasValue)
+            {
+                await _queueSemaphore.WaitAsync();
+                try
+                {
+                    _scheduledRetryQueue.Enqueue(task, task.NextRetryTime.Value);
+                }
+                finally
+                {
+                    _queueSemaphore.Release();
                 }
             }
         }
