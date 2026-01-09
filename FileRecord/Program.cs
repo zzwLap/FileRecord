@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using FileRecord.Data;
 using FileRecord.Services;
 using FileRecord.Services.Upload;
@@ -30,6 +31,12 @@ else if (args.Length > 0 && args[0] == "--custom-test")
 {
     // 运行自定义过滤功能测试
     FileRecord.Tests.CustomFilterTest.TestCustomFiltering();
+    return;
+}
+else if (args.Length > 0 && args[0] == "--import")
+{
+    // 运行数据导入功能
+    await RunDataImportAsync();
     return;
 }
 
@@ -204,3 +211,140 @@ while (true)
 
 // 停止上传任务处理
 taskManager.StopProcessing();
+
+// 数据导入功能实现
+static async Task RunDataImportAsync()
+{
+    var databaseContext = new DatabaseContext();
+    var taskManager = new UploadTaskManager(databaseContext);
+    var uploadService = new FileRecord.Services.Upload.FileUploadService(databaseContext, taskManager);
+    var importService = new FileRecord.Services.DataImportService(databaseContext, uploadService);
+    
+    Console.WriteLine("=== 数据导入功能 ===");
+    Console.WriteLine("请输入要导入的根目录路径: ");
+    string rootDirectory = Console.ReadLine() ?? "";
+    
+    if (string.IsNullOrWhiteSpace(rootDirectory) || !Directory.Exists(rootDirectory))
+    {
+        Console.WriteLine("目录路径无效！");
+        return;
+    }
+    
+    var criteria = new FileRecord.Services.DataImportService.ImportCriteria();
+    
+    // 询问是否设置文件扩展名过滤
+    Console.WriteLine("是否要设置文件扩展名过滤？(y/n，默认为n): ");
+    string? extFilterInput = Console.ReadLine();
+    if (!string.IsNullOrEmpty(extFilterInput) && extFilterInput.ToLower().StartsWith("y"))
+    {
+        Console.Write("请输入允许的扩展名，用逗号分隔 (例如: .cs,.txt,.pdf): ");
+        string? extInput = Console.ReadLine();
+        if (!string.IsNullOrWhiteSpace(extInput))
+        {
+            criteria.AllowedExtensions = extInput.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            Console.WriteLine($"已设置扩展名过滤: {string.Join(", ", criteria.AllowedExtensions)}");
+        }
+    }
+    
+    // 询问是否设置文件大小范围
+    Console.WriteLine("是否要设置文件大小范围？(y/n，默认为n): ");
+    string? sizeFilterInput = Console.ReadLine();
+    if (!string.IsNullOrEmpty(sizeFilterInput) && sizeFilterInput.ToLower().StartsWith("y"))
+    {
+        Console.Write("请输入最小文件大小 (KB): ");
+        if (long.TryParse(Console.ReadLine(), out long minSizeKB) && minSizeKB >= 0)
+        {
+            criteria.MinFileSize = minSizeKB * 1024; // 转换为字节
+        }
+        
+        Console.Write("请输入最大文件大小 (KB): ");
+        if (long.TryParse(Console.ReadLine(), out long maxSizeKB) && maxSizeKB > 0)
+        {
+            criteria.MaxFileSize = maxSizeKB * 1024; // 转换为字节
+        }
+        
+        Console.WriteLine($"已设置文件大小范围: {(criteria.MinFileSize?.ToString() ?? "无限制")} - {(criteria.MaxFileSize?.ToString() ?? "无限制")} 字节");
+    }
+    
+    // 询问是否设置修改时间范围
+    Console.WriteLine("是否要设置修改时间范围？(y/n，默认为n): ");
+    string? timeFilterInput = Console.ReadLine();
+    if (!string.IsNullOrEmpty(timeFilterInput) && timeFilterInput.ToLower().StartsWith("y"))
+    {
+        Console.Write("请输入最早修改时间 (yyyy-MM-dd 格式，或天数如 '30' 表示最近30天): ");
+        string? timeInput = Console.ReadLine();
+        if (!string.IsNullOrWhiteSpace(timeInput))
+        {
+            if (int.TryParse(timeInput, out int days))
+            {
+                // 如果输入的是数字，认为是天数
+                criteria.MinModifiedTime = DateTime.Now.AddDays(-days);
+            }
+            else if (DateTime.TryParse(timeInput, out DateTime minTime))
+            {
+                criteria.MinModifiedTime = minTime;
+            }
+        }
+        
+        Console.Write("请输入最晚修改时间 (yyyy-MM-dd 格式): ");
+        string? maxTimeInput = Console.ReadLine();
+        if (!string.IsNullOrWhiteSpace(maxTimeInput) && DateTime.TryParse(maxTimeInput, out DateTime maxTime))
+        {
+            criteria.MaxModifiedTime = maxTime;
+        }
+        
+        Console.WriteLine($"已设置修改时间范围: {(criteria.MinModifiedTime?.ToString("yyyy-MM-dd") ?? "无限制")} - {(criteria.MaxModifiedTime?.ToString("yyyy-MM-dd") ?? "无限制")}");
+    }
+    
+    // 询问是否设置目录路径过滤
+    Console.WriteLine("是否要设置目录路径过滤？(y/n，默认为n): ");
+    string? pathFilterInput = Console.ReadLine();
+    if (!string.IsNullOrEmpty(pathFilterInput) && pathFilterInput.ToLower().StartsWith("y"))
+    {
+        Console.Write("请输入允许的目录路径模式，用逗号分隔 (例如: C:\\Projects\\*, D:\\Documents\\**): ");
+        string? pathInput = Console.ReadLine();
+        if (!string.IsNullOrWhiteSpace(pathInput))
+        {
+            criteria.AllowedDirectoryPatterns = pathInput.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            Console.WriteLine($"已设置目录路径过滤: {string.Join(", ", criteria.AllowedDirectoryPatterns)}");
+        }
+    }
+    
+    // 询问是否设置文件名通配符过滤
+    Console.WriteLine("是否要设置文件名通配符过滤？(y/n，默认为n): ");
+    string? nameFilterInput = Console.ReadLine();
+    if (!string.IsNullOrEmpty(nameFilterInput) && nameFilterInput.ToLower().StartsWith("y"))
+    {
+        Console.Write("请输入文件名通配符模式，用逗号分隔 (例如: *a.*, *.txt): ");
+        string? nameInput = Console.ReadLine();
+        if (!string.IsNullOrWhiteSpace(nameInput))
+        {
+            criteria.FileNamePatterns = nameInput.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            Console.WriteLine($"已设置文件名通配符过滤: {string.Join(", ", criteria.FileNamePatterns)}");
+        }
+    }
+    
+    // 设置监控组ID
+    Console.Write("请输入监控组ID (默认为 'imported'): ");
+    string? groupId = Console.ReadLine();
+    criteria.MonitorGroupId = string.IsNullOrWhiteSpace(groupId) ? "imported" : groupId;
+    
+    // 开始导入
+    Console.WriteLine($"\n开始导入数据到组 '{criteria.MonitorGroupId}'...");
+    var result = await importService.ImportDataAsync(rootDirectory, criteria);
+    
+    Console.WriteLine($"\n导入完成！");
+    Console.WriteLine($"总计扫描: {result.TotalFilesScanned} 个文件");
+    Console.WriteLine($"成功导入: {result.FilesImported} 个文件");
+    Console.WriteLine($"跳过: {result.FilesSkipped} 个文件");
+    Console.WriteLine($"失败: {result.FilesFailed} 个文件");
+    
+    if (result.ErrorMessages.Any())
+    {
+        Console.WriteLine("\n错误信息:");
+        foreach (var errorMsg in result.ErrorMessages)
+        {
+            Console.WriteLine($"  - {errorMsg}");
+        }
+    }
+}
