@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -192,6 +193,351 @@ namespace FileRecord.Services
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// 根据指定条件导入文件数据（优化版本）
+        /// </summary>
+        /// <param name="rootDirectory">根目录路径</param>
+        /// <param name="criteria">导入条件</param>
+        /// <param name="parallelProcessing">是否启用并行处理</param>
+        /// <param name="batchSize">批量处理大小</param>
+        /// <returns>导入结果</returns>
+        public async Task<ImportResult> ImportDataAsync(string rootDirectory, ImportCriteria criteria, bool parallelProcessing = true, int batchSize = 100)
+        {
+            var result = new ImportResult();
+            
+            if (!Directory.Exists(rootDirectory))
+            {
+                result.ErrorMessages.Add($"目录不存在: {rootDirectory}");
+                return result;
+            }
+
+            Console.WriteLine($"开始导入数据，根目录: {rootDirectory}");
+            
+            var searchOption = criteria.IncludeSubdirectories ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+            var allFiles = Directory.GetFiles(rootDirectory, "*", searchOption);
+
+            Console.WriteLine($"扫描到 {allFiles.Length} 个文件，开始筛选...");
+
+            // 预筛选：根据文件名快速筛选，避免不必要的详细检查
+            var filteredFiles = PreFilterFiles(allFiles, criteria);
+            
+            Console.WriteLine($"预筛选后剩余 {filteredFiles.Count} 个文件");
+            
+            if (filteredFiles.Count == 0)
+            {
+                Console.WriteLine("没有符合条件的文件，导入完成。");
+                return result;
+            }
+            
+            // 根据是否启用并行处理来决定处理方式
+            if (parallelProcessing)
+            {
+                await ProcessFilesInParallel(filteredFiles, criteria, result, batchSize);
+            }
+            else
+            {
+                await ProcessFilesSequentially(filteredFiles, criteria, result, batchSize);
+            }
+
+            Console.WriteLine($"导入完成。总计扫描: {result.TotalFilesScanned}, 导入: {result.FilesImported}, 跳过: {result.FilesSkipped}, 失败: {result.FilesFailed}");
+
+            // 将新导入的文件添加到上传队列
+            if (result.FilesImported > 0)
+            {
+                Console.WriteLine("将新导入的文件添加到上传队列...");
+                _uploadService.EnqueueAllUnuploadedFiles();
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// 预筛选文件，根据文件名和扩展名快速过滤
+        /// </summary>
+        /// <param name="allFiles">所有文件路径</param>
+        /// <param name="criteria">筛选条件</param>
+        /// <returns>预筛选后的文件列表</returns>
+        private List<string> PreFilterFiles(string[] allFiles, ImportCriteria criteria)
+        {
+            var filteredFiles = new List<string>();
+            
+            foreach (var filePath in allFiles)
+            {
+                // 首先检查扩展名，这是最快的筛选条件
+                if (criteria.AllowedExtensions.Any())
+                {
+                    string extension = Path.GetExtension(filePath);
+                    if (!criteria.AllowedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
+                    {
+                        continue; // 扩展名不符合，跳过
+                    }
+                }
+                
+                // 检查文件名通配符模式
+                if (criteria.FileNamePatterns.Any())
+                {
+                    string fileName = Path.GetFileName(filePath);
+                    bool nameMatch = false;
+                    
+                    foreach (var pattern in criteria.FileNamePatterns)
+                    {
+                        if (IsNameMatchPattern(fileName, pattern))
+                        {
+                            nameMatch = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!nameMatch)
+                    {
+                        continue; // 文件名不符合模式，跳过
+                    }
+                }
+                
+                // 如果临时文件过滤启用且是临时文件，跳过
+                if (criteria.SkipTemporaryFiles && FileUtils.IsTemporaryFile(filePath))
+                {
+                    continue;
+                }
+                
+                // 如果通过了快速筛选条件，则添加到待处理列表
+                filteredFiles.Add(filePath);
+            }
+            
+            return filteredFiles;
+        }
+
+        /// <summary>
+        /// 并行处理文件
+        /// </summary>
+        /// <param name="filteredFiles">预筛选后的文件列表</param>
+        /// <param name="criteria">导入条件</param>
+        /// <param name="result">导入结果</param>
+        /// <param name="batchSize">批量处理大小</param>
+        private async Task ProcessFilesInParallel(List<string> filteredFiles, ImportCriteria criteria, ImportResult result, int batchSize)
+        {
+            var allFileInfoModels = new ConcurrentBag<FileInfoModel>();
+            var skippedFiles = new ConcurrentBag<string>();
+            var failedFiles = new ConcurrentBag<(string filePath, string errorMessage)>();
+            
+            // 并行处理文件，计算MD5等信息
+            await Parallel.ForEachAsync(filteredFiles, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, 
+                async (filePath, ct) =>
+                {
+                    try
+                    {
+                        var fileInfo = new FileInfo(filePath);
+                        
+                        // 再次检查详细条件，因为预筛选只检查了部分条件
+                        if (!PassesDetailedChecks(fileInfo, criteria))
+                        {
+                            skippedFiles.Add(filePath);
+                            return;
+                        }
+
+                        // 创建数据库记录
+                        var fileInfoModel = new FileInfoModel(filePath)
+                        {
+                            MonitorGroupId = criteria.MonitorGroupId,
+                            IsDeleted = false, // 文件存在，不是删除状态
+                            IsUploaded = false, // 新导入的文件默认未上传
+                            UploadTime = null
+                        };
+
+                        // 计算MD5值
+                        try
+                        {
+                            fileInfoModel.MD5Hash = await Task.Run(() => FileUtils.CalculateMD5(filePath));
+                        }
+                        catch (Exception md5Ex)
+                        {
+                            Console.WriteLine($"计算MD5失败 {filePath}: {md5Ex.Message}");
+                            fileInfoModel.MD5Hash = string.Empty;
+                        }
+
+                        allFileInfoModels.Add(fileInfoModel);
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        failedFiles.Add((filePath, $"无权限访问文件: {filePath}"));
+                    }
+                    catch (Exception ex)
+                    {
+                        failedFiles.Add((filePath, $"处理文件失败 {filePath}: {ex.Message}"));
+                    }
+                });
+
+            // 更新结果统计
+            result.TotalFilesScanned = filteredFiles.Count;
+            result.FilesImported = allFileInfoModels.Count;
+            result.FilesSkipped = skippedFiles.Count;
+            result.FilesFailed = failedFiles.Count;
+            
+            // 添加错误信息
+            foreach (var (filePath, errorMessage) in failedFiles)
+            {
+                result.ErrorMessages.Add(errorMessage);
+                Console.WriteLine(errorMessage);
+            }
+            
+            // 批量插入数据库
+            var fileInfoList = allFileInfoModels.ToList();
+            if (fileInfoList.Any())
+            {
+                BatchInsertToFileDatabase(fileInfoList, batchSize);
+            }
+        }
+
+        /// <summary>
+        /// 顺序处理文件
+        /// </summary>
+        /// <param name="filteredFiles">预筛选后的文件列表</param>
+        /// <param name="criteria">导入条件</param>
+        /// <param name="result">导入结果</param>
+        /// <param name="batchSize">批量处理大小</param>
+        private async Task ProcessFilesSequentially(List<string> filteredFiles, ImportCriteria criteria, ImportResult result, int batchSize)
+        {
+            var batch = new List<FileInfoModel>();
+            
+            foreach (var filePath in filteredFiles)
+            {
+                result.TotalFilesScanned++;
+
+                try
+                {
+                    var fileInfo = new FileInfo(filePath);
+
+                    // 再次检查详细条件
+                    if (!PassesDetailedChecks(fileInfo, criteria))
+                    {
+                        result.FilesSkipped++;
+                        continue;
+                    }
+
+                    // 创建数据库记录
+                    var fileInfoModel = new FileInfoModel(filePath)
+                    {
+                        MonitorGroupId = criteria.MonitorGroupId,
+                        IsDeleted = false, // 文件存在，不是删除状态
+                        IsUploaded = false, // 新导入的文件默认未上传
+                        UploadTime = null
+                    };
+
+                    // 计算MD5值
+                    try
+                    {
+                        fileInfoModel.MD5Hash = FileUtils.CalculateMD5(filePath);
+                    }
+                    catch (Exception md5Ex)
+                    {
+                        Console.WriteLine($"计算MD5失败 {filePath}: {md5Ex.Message}");
+                        fileInfoModel.MD5Hash = string.Empty;
+                    }
+
+                    batch.Add(fileInfoModel);
+                    result.FilesImported++;
+
+                    // 当批次达到指定大小时，批量插入数据库
+                    if (batch.Count >= batchSize)
+                    {
+                        BatchInsertToFileDatabase(batch, batchSize);
+                        batch.Clear();
+                        
+                        Console.WriteLine($"已批量处理 {result.FilesImported} 个文件...");
+                    }
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    result.FilesFailed++;
+                    result.ErrorMessages.Add($"无权限访问文件: {filePath}");
+                    Console.WriteLine($"无权限访问文件: {filePath}");
+                }
+                catch (Exception ex)
+                {
+                    result.FilesFailed++;
+                    result.ErrorMessages.Add($"处理文件失败 {filePath}: {ex.Message}");
+                    Console.WriteLine($"处理文件失败 {filePath}: {ex.Message}");
+                }
+            }
+
+            // 插入剩余的文件
+            if (batch.Any())
+            {
+                BatchInsertToFileDatabase(batch, batchSize);
+            }
+        }
+
+        /// <summary>
+        /// 批量插入文件信息到数据库
+        /// </summary>
+        /// <param name="fileInfoList">文件信息列表</param>
+        /// <param name="batchSize">批量大小</param>
+        private void BatchInsertToFileDatabase(List<FileInfoModel> fileInfoList, int batchSize)
+        {
+            if (!fileInfoList.Any()) return;
+            
+            for (int i = 0; i < fileInfoList.Count; i += batchSize)
+            {
+                var batch = fileInfoList.Skip(i).Take(batchSize).ToList();
+                
+                foreach (var fileInfo in batch)
+                {
+                    _databaseContext.InsertFileInfo(fileInfo);
+                }
+            }
+        }
+
+        /// <summary>
+        /// 检查文件是否通过详细检查（除了预筛选的条件之外）
+        /// </summary>
+        /// <param name="fileInfo">文件信息</param>
+        /// <param name="criteria">筛选条件</param>
+        /// <returns>是否通过检查</returns>
+        private bool PassesDetailedChecks(FileInfo fileInfo, ImportCriteria criteria)
+        {
+            // 检查文件大小
+            if (criteria.MinFileSize.HasValue && fileInfo.Length < criteria.MinFileSize.Value)
+            {
+                return false;
+            }
+
+            if (criteria.MaxFileSize.HasValue && fileInfo.Length > criteria.MaxFileSize.Value)
+            {
+                return false;
+            }
+
+            // 检查修改时间
+            if (criteria.MinModifiedTime.HasValue && fileInfo.LastWriteTime < criteria.MinModifiedTime.Value)
+            {
+                return false;
+            }
+
+            if (criteria.MaxModifiedTime.HasValue && fileInfo.LastWriteTime > criteria.MaxModifiedTime.Value)
+            {
+                return false;
+            }
+
+            // 检查目录路径匹配
+            if (criteria.AllowedDirectoryPatterns.Any())
+            {
+                bool pathMatch = false;
+                foreach (var pattern in criteria.AllowedDirectoryPatterns)
+                {
+                    if (IsPathMatchPattern(fileInfo.DirectoryName, pattern))
+                    {
+                        pathMatch = true;
+                        break;
+                    }
+                }
+                if (!pathMatch)
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         /// <summary>
