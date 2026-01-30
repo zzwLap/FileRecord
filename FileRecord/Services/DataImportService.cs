@@ -85,6 +85,11 @@ namespace FileRecord.Services
             /// 文件过滤规则，如果提供则使用此规则进行额外的过滤
             /// </summary>
             public FileFilterRule? FilterRule { get; set; } = null;
+
+            /// <summary>
+            /// 是否在大规模导入时计算MD5（关闭可极大提升导入速度）
+            /// </summary>
+            public bool CalculateMD5 { get; set; } = true;
         }
 
         /// <summary>
@@ -108,116 +113,109 @@ namespace FileRecord.Services
         public async Task<ImportResult> ImportDataAsync(string rootDirectory, ImportCriteria criteria)
         {
             var result = new ImportResult();
+            var batchSize = 1000; // 提升批次大小以平衡性能与稳定性
             
+            int totalScanned = 0;
+            int filesImported = 0;
+            int filesSkipped = 0;
+            int filesFailed = 0;
+
             if (!Directory.Exists(rootDirectory))
             {
                 result.ErrorMessages.Add($"目录不存在: {rootDirectory}");
                 return result;
             }
 
-            Console.WriteLine($"开始导入数据，根目录: {rootDirectory}");
+            Console.WriteLine($"[开始] 海量数据流式导入，根目录: {rootDirectory}");
             
             var searchOption = criteria.IncludeSubdirectories ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-            var allFiles = Directory.EnumerateFiles(rootDirectory, "*", searchOption);
-
-            // 转换为List以获取计数
-            var fileList = allFiles.ToList();
-            Console.WriteLine($"扫描到 {fileList.Count} 个文件，开始筛选...");
             
-            // 用于批量插入的列表
+            // 使用 EnumerateFiles 避免一次性将百万路径加载到内存
+            var fileEnum = Directory.EnumerateFiles(rootDirectory, "*", searchOption);
+            
             var batchFileInfos = new List<FileInfoModel>();
-            var lockObject = new object(); // 用于同步批量列表的访问
+            var lockObject = new object();
 
-            foreach (var filePath in fileList)
+            // 使用限制并发度的并行处理，防止 IO 锁死
+            await Parallel.ForEachAsync(fileEnum, new ParallelOptions 
+            { 
+                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 2) 
+            }, async (filePath, ct) =>
             {
-                result.TotalFilesScanned++;
+                Interlocked.Increment(ref totalScanned);
 
                 try
                 {
                     var fileInfo = new FileInfo(filePath);
 
-                    // 检查是否符合筛选条件
+                    // 1. 快速筛选
                     if (!IsFileMatchCriteria(fileInfo, criteria))
                     {
-                        result.FilesSkipped++;
-                        continue;
+                        Interlocked.Increment(ref filesSkipped);
+                        return;
                     }
 
-                    // 检查是否为临时文件
-                    if (criteria.SkipTemporaryFiles && FileUtils.IsTemporaryFile(filePath))
-                    {
-                        result.FilesSkipped++;
-                        Console.WriteLine($"跳过临时文件: {Path.GetFileName(filePath)}");
-                        continue;
-                    }
-
-                    // 创建数据库记录
+                    // 2. 创建模型
                     var fileInfoModel = new FileInfoModel(filePath)
                     {
                         MonitorGroupId = criteria.MonitorGroupId,
-                        IsDeleted = false, // 文件存在，不是删除状态
-                        IsUploaded = false, // 新导入的文件默认未上传
-                        UploadTime = null
+                        IsDeleted = false,
+                        IsUploaded = false
                     };
 
-                    // 计算MD5值
-                    try
+                    // 3. 按需计算MD5
+                    if (criteria.CalculateMD5)
                     {
-                        fileInfoModel.MD5Hash = FileUtils.CalculateMD5(filePath);
-                    }
-                    catch (Exception md5Ex)
-                    {
-                        Console.WriteLine($"计算MD5失败 {filePath}: {md5Ex.Message}");
-                        fileInfoModel.MD5Hash = string.Empty;
+                        try
+                        {
+                            // 使用 Task.Run 确保计算逻辑不阻塞枚举主线程
+                            fileInfoModel.MD5Hash = await Task.Run(() => FileUtils.CalculateMD5(filePath));
+                        }
+                        catch { fileInfoModel.MD5Hash = string.Empty; }
                     }
 
-                    // 将文件信息添加到批量列表中
+                    // 4. 线程安全的批次收集
+                    List<FileInfoModel>? batchToInsert = null;
                     lock (lockObject)
                     {
                         batchFileInfos.Add(fileInfoModel);
-                        result.FilesImported++;
-
-                        // 每达到批量大小时批量插入一次
-                        if (batchFileInfos.Count >= FileRecord.Config.AppConfig.DefaultBatchSize)
+                        if (batchFileInfos.Count >= batchSize)
                         {
-                            _databaseContext.BatchInsertFileInfos(batchFileInfos);
-                            batchFileInfos.Clear(); // 清空批量列表
-                            if (result.FilesImported % FileRecord.Config.AppConfig.ProgressReportInterval == 0)
-                            {
-                                Console.WriteLine($"已导入 {result.FilesImported} 个文件...");
-                            }
+                            batchToInsert = batchFileInfos;
+                            batchFileInfos = new List<FileInfoModel>();
+                        }
+                    }
+
+                    // 5. 触发数据库写入（在锁外执行）
+                    if (batchToInsert != null)
+                    {
+                        _databaseContext.BatchInsertFileInfos(batchToInsert);
+                        Interlocked.Add(ref filesImported, batchToInsert.Count);
+                        
+                        if (filesImported % 5000 == 0)
+                        {
+                            Console.WriteLine($"[进度] 已成功导入 {filesImported} 个文件...");
                         }
                     }
                 }
-                catch (UnauthorizedAccessException ex)
-                {
-                    result.FilesFailed++;
-                    result.ErrorMessages.Add($"无权限访问文件: {filePath}, 错误: {ex.Message}");
-                    Console.WriteLine($"无权限访问文件: {filePath}, 错误: {ex.Message}");
-                }
-                catch (IOException ex)
-                {
-                    result.FilesFailed++;
-                    result.ErrorMessages.Add($"文件I/O错误 {filePath}: {ex.Message}");
-                    Console.WriteLine($"文件I/O错误 {filePath}: {ex.Message}");
-                }
                 catch (Exception ex)
                 {
-                    result.FilesFailed++;
-                    result.ErrorMessages.Add($"处理文件失败 {filePath}: {ex.Message}");
-                    Console.WriteLine($"处理文件失败 {filePath}: {ex.Message}");
+                    Interlocked.Increment(ref filesFailed);
+                    lock (lockObject) { result.ErrorMessages.Add($"处理失败 {filePath}: {ex.Message}"); }
                 }
+            });
+
+            // 处理剩余数据
+            if (batchFileInfos.Count > 0)
+            {
+                _databaseContext.BatchInsertFileInfos(batchFileInfos);
+                Interlocked.Add(ref filesImported, batchFileInfos.Count);
             }
 
-            // 处理剩余的文件（如果有的话）
-            lock (lockObject)
-            {
-                if (batchFileInfos.Count > 0)
-                {
-                    _databaseContext.BatchInsertFileInfos(batchFileInfos);
-                    batchFileInfos.Clear();
-                }
-            }
+            result.TotalFilesScanned = totalScanned;
+            result.FilesImported = filesImported;
+            result.FilesSkipped = filesSkipped;
+            result.FilesFailed = filesFailed;
 
             Console.WriteLine($"导入完成。总计扫描: {result.TotalFilesScanned}, 导入: {result.FilesImported}, 跳过: {result.FilesSkipped}, 失败: {result.FilesFailed}");
 
