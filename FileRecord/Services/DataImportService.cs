@@ -19,6 +19,7 @@ namespace FileRecord.Services
     {
         private readonly DatabaseContext _databaseContext;
         private readonly FileUploadService _uploadService;
+        private readonly UsnJournalService _usnService = new UsnJournalService();
 
         public DataImportService(DatabaseContext databaseContext, FileUploadService uploadService)
         {
@@ -102,6 +103,45 @@ namespace FileRecord.Services
             public int FilesSkipped { get; set; }
             public int FilesFailed { get; set; }
             public List<string> ErrorMessages { get; set; } = new List<string>();
+        }
+
+        /// <summary>
+        /// 利用 USN 日志加速数据导入（快速筛选切入点）
+        /// </summary>
+        public async Task<ImportResult> ImportDataWithUsnAsync(string rootDirectory, ImportCriteria criteria)
+        {
+            // 1. 检查根目录所在的驱动器是否支持 USN
+            string drive = Path.GetPathRoot(rootDirectory) ?? "C:\\";
+            if (!_usnService.IsNtfsUsnSupported(drive))
+            {
+                Console.WriteLine($"[回退] {drive} 不支持 USN，执行全量导入...");
+                return await ImportDataAsync(rootDirectory, criteria);
+            }
+
+            // 2. 从数据库获取该目录上次记录的 USN
+            long lastUsn = _databaseContext.GetLastUsn(rootDirectory);
+            long currentUsn = _usnService.GetCurrentUsn(drive);
+
+            if (lastUsn == 0)
+            {
+                Console.WriteLine($"[初始化] {rootDirectory} 首次运行，记录当前 USN ({currentUsn}) 并执行全量扫描...");
+                var initResult = await ImportDataAsync(rootDirectory, criteria);
+                _databaseContext.UpdateLastUsn(rootDirectory, currentUsn); // 记录初始 USN
+                return initResult;
+            }
+
+            // 3. 获取变更文件集
+            HashSet<string> changedFiles = _usnService.GetModifiedFiles(drive, lastUsn);
+            Console.WriteLine($"[USN] 检测到 {rootDirectory} 目录关联的 {drive} 上有 {changedFiles.Count} 个文件变更记录。");
+
+            // 4. 执行基于 USN 快速筛选的导入
+            var result = await ImportDataAsync(rootDirectory, criteria, true, FileRecord.Config.AppConfig.DefaultBatchSize, changedFiles);
+            
+            // 5. 导入完成后自动更新该目录的 USN 状态
+            _databaseContext.UpdateLastUsn(rootDirectory, currentUsn);
+            Console.WriteLine($"[完成] 已更新 {rootDirectory} 的 USN 到 {currentUsn}");
+            
+            return result;
         }
 
         /// <summary>
@@ -236,8 +276,9 @@ namespace FileRecord.Services
         /// <param name="criteria">导入条件</param>
         /// <param name="parallelProcessing">是否启用并行处理</param>
         /// <param name="batchSize">批量处理大小</param>
+        /// <param name="changedFiles">可选的 USN 变更文件集</param>
         /// <returns>导入结果</returns>
-        public async Task<ImportResult> ImportDataAsync(string rootDirectory, ImportCriteria criteria, bool parallelProcessing = true, int batchSize = FileRecord.Config.AppConfig.DefaultBatchSize)
+        public async Task<ImportResult> ImportDataAsync(string rootDirectory, ImportCriteria criteria, bool parallelProcessing = true, int batchSize = FileRecord.Config.AppConfig.DefaultBatchSize, HashSet<string>? changedFiles = null)
         {
             var result = new ImportResult();
             
@@ -256,8 +297,8 @@ namespace FileRecord.Services
             var fileArray = allFiles.ToArray();
             Console.WriteLine($"扫描到 {fileArray.Length} 个文件，开始筛选...");
 
-            // 预筛选：根据文件名快速筛选，避免不必要的详细检查
-            var filteredFiles = PreFilterFiles(fileArray, criteria);
+            // 预筛选：根据文件名快速筛选，并结合 USN 变更集进行二次过滤
+            var filteredFiles = PreFilterFiles(fileArray, criteria, changedFiles);
             
             Console.WriteLine($"预筛选后剩余 {filteredFiles.Count} 个文件");
             
@@ -294,13 +335,27 @@ namespace FileRecord.Services
         /// </summary>
         /// <param name="allFiles">所有文件路径</param>
         /// <param name="criteria">筛选条件</param>
+        /// <param name="changedFiles">可选的 USN 变更集</param>
         /// <returns>预筛选后的文件列表</returns>
-        private List<string> PreFilterFiles(string[] allFiles, ImportCriteria criteria)
+        private List<string> PreFilterFiles(string[] allFiles, ImportCriteria criteria, HashSet<string>? changedFiles = null)
         {
             var filteredFiles = new List<string>();
             
             foreach (var filePath in allFiles)
             {
+                string fileName = Path.GetFileName(filePath);
+
+                // USN 快速筛选逻辑：
+                // 如果提供了变更集，且当前文件不在变更集中，且数据库中已经存在该路径
+                // 则说明该文件物理上未发生任何变化，可以直接跳过
+                if (changedFiles != null && !changedFiles.Contains(fileName))
+                {
+                    if (_databaseContext.FileExists(filePath))
+                    {
+                        continue; 
+                    }
+                }
+
                 // 首先检查扩展名，这是最快的筛选条件
                 if (criteria.AllowedExtensions.Any())
                 {
@@ -314,7 +369,6 @@ namespace FileRecord.Services
                 // 检查文件名通配符模式
                 if (criteria.FileNamePatterns.Any())
                 {
-                    string fileName = Path.GetFileName(filePath);
                     bool nameMatch = false;
                     
                     foreach (var pattern in criteria.FileNamePatterns)

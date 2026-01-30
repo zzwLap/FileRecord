@@ -36,8 +36,22 @@ namespace FileRecord.Data
                     IsDeleted INTEGER NOT NULL DEFAULT 0
                 )";
             
+            // VolumeUsnStates 表意义：
+            // 1. 增量同步锚点：记录每个监控目录上一次同步完成时的 USN 序列号。
+            // 2. 性能优化：通过该序列号，系统可直接查询 NTFS 变更日志获取增量数据，无需递归扫描百万级文件。
+            // 3. 可靠性：确保程序在重启后，能通过序列号“补课”，找回程序关闭期间发生的所有文件变更。
+            var createUsnTableSql = @"
+                CREATE TABLE IF NOT EXISTS UsnPathMapping (
+                    DirectoryPath TEXT PRIMARY KEY,
+                    LastUsn INTEGER NOT NULL,
+                    LastUpdated TEXT NOT NULL
+                )";
+            
             using var command = new SqliteCommand(createTableSql, connection);
             command.ExecuteNonQuery();
+
+            using var usnCommand = new SqliteCommand(createUsnTableSql, connection);
+            usnCommand.ExecuteNonQuery();
             
             // 检查表结构
             var alterTableSql = @"
@@ -372,6 +386,42 @@ namespace FileRecord.Data
             }
             
             transaction.Commit();
+        }
+
+        /// <summary>
+        /// 获取指定目录上一次记录的 USN
+        /// </summary>
+        public long GetLastUsn(string directoryPath)
+        {
+            using var connection = new SqliteConnection(_connectionString);
+            connection.Open();
+
+            var selectSql = "SELECT LastUsn FROM UsnPathMapping WHERE DirectoryPath = @DirectoryPath";
+            using var command = new SqliteCommand(selectSql, connection);
+            command.Parameters.AddWithValue("@DirectoryPath", directoryPath);
+
+            var result = command.ExecuteScalar();
+            return result != null ? Convert.ToInt64(result) : 0;
+        }
+
+        /// <summary>
+        /// 更新目录的 USN 状态
+        /// </summary>
+        public void UpdateLastUsn(string directoryPath, long usn)
+        {
+            using var connection = new SqliteConnection(_connectionString);
+            connection.Open();
+
+            var upsertSql = @"
+                INSERT OR REPLACE INTO UsnPathMapping (DirectoryPath, LastUsn, LastUpdated) 
+                VALUES (@DirectoryPath, @LastUsn, @LastUpdated)";
+            
+            using var command = new SqliteCommand(upsertSql, connection);
+            command.Parameters.AddWithValue("@DirectoryPath", directoryPath);
+            command.Parameters.AddWithValue("@LastUsn", usn);
+            command.Parameters.AddWithValue("@LastUpdated", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+
+            command.ExecuteNonQuery();
         }
     }
 }
