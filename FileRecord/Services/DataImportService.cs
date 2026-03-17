@@ -30,24 +30,10 @@ namespace FileRecord.Services
 
         /// <summary>
         /// 导入条件类，定义筛选条件
+        /// 继承自 FileFilterRule，复用基础过滤属性
         /// </summary>
-        public class ImportCriteria
+        public class ImportCriteria : FileFilterRule
         {
-            /// <summary>
-            /// 允许的文件扩展名列表，如 [".cs", ".txt"]
-            /// </summary>
-            public List<string> AllowedExtensions { get; set; } = new List<string>();
-
-            /// <summary>
-            /// 最小文件大小（字节），null表示无限制
-            /// </summary>
-            public long? MinFileSize { get; set; } = null;
-
-            /// <summary>
-            /// 最大文件大小（字节），null表示无限制
-            /// </summary>
-            public long? MaxFileSize { get; set; } = null;
-
             /// <summary>
             /// 最小修改时间，null表示无限制
             /// </summary>
@@ -65,8 +51,10 @@ namespace FileRecord.Services
 
             /// <summary>
             /// 文件名通配符模式，如 ["*a.*", "*.txt"]
+            /// 注意：与基类 FileNamePatterns（正则表达式）不同，这里使用通配符匹配，更适合用户直接输入
+            /// 如果需要将通配符转换为正则表达式使用，可使用 FileFilterRuleFactory.CreateWildcardRule()
             /// </summary>
-            public List<string> FileNamePatterns { get; set; } = new List<string>();
+            public List<string> FileNameWildcardPatterns { get; set; } = new List<string>();
 
             /// <summary>
             /// 监控组ID
@@ -77,16 +65,6 @@ namespace FileRecord.Services
             /// 是否包含子目录
             /// </summary>
             public bool IncludeSubdirectories { get; set; } = true;
-
-            /// <summary>
-            /// 是否跳过临时文件
-            /// </summary>
-            public bool SkipTemporaryFiles { get; set; } = true;
-            
-            /// <summary>
-            /// 文件过滤规则，如果提供则使用此规则进行额外的过滤
-            /// </summary>
-            public FileFilterRule? FilterRule { get; set; } = null;
 
             /// <summary>
             /// 是否在大规模导入时计算MD5（关闭可极大提升导入速度）
@@ -361,22 +339,30 @@ namespace FileRecord.Services
                     }
                 }
 
-                // 首先检查扩展名，这是最快的筛选条件
-                if (criteria.AllowedExtensions.Any())
+                // 使用基类 FileFilterRule 的扩展名和临时文件过滤逻辑（与 IsFileAllowed 保持一致）
+                // 获取文件大小用于完整过滤检查
+                long fileSize = 0;
+                try
                 {
-                    string extension = Path.GetExtension(filePath);
-                    if (!criteria.AllowedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
-                    {
-                        continue; // 扩展名不符合，跳过
-                    }
+                    fileSize = new FileInfo(filePath).Length;
                 }
-                
-                // 检查文件名通配符模式
-                if (criteria.FileNamePatterns.Any())
+                catch
+                {
+                    // 如果无法获取文件大小，继续使用默认值0
+                }
+
+                // 调用基类的 IsFileAllowed 进行基础过滤（包括扩展名、临时文件、文件名正则模式等）
+                if (!criteria.IsFileAllowed(filePath, fileSize))
+                {
+                    continue;
+                }
+
+                // 检查文件名通配符模式（ImportCriteria 特有，使用通配符而非正则）
+                if (criteria.FileNameWildcardPatterns.Any())
                 {
                     bool nameMatch = false;
                     
-                    foreach (var pattern in criteria.FileNamePatterns)
+                    foreach (var pattern in criteria.FileNameWildcardPatterns)
                     {
                         if (IsNameMatchPattern(fileName, pattern))
                         {
@@ -387,23 +373,7 @@ namespace FileRecord.Services
                     
                     if (!nameMatch)
                     {
-                        continue; // 文件名不符合模式，跳过
-                    }
-                }
-                
-                // 如果临时文件过滤启用且是临时文件，跳过
-                if (criteria.SkipTemporaryFiles && FileUtils.IsTemporaryFile(filePath))
-                {
-                    continue;
-                }
-                
-                // 检查FileFilterRule过滤规则
-                if (criteria.FilterRule != null)
-                {
-                    var fileInfo = new FileInfo(filePath);
-                    if (!criteria.FilterRule.IsFileAllowed(filePath, fileInfo.Length))
-                    {
-                        continue; // 不符合过滤规则，跳过
+                        continue; // 文件名不符合通配符模式，跳过
                     }
                 }
                 
@@ -611,33 +581,23 @@ namespace FileRecord.Services
 
         /// <summary>
         /// 检查文件是否符合筛选条件（统一入口）
+        /// 首先调用基类 FileFilterRule.IsFileAllowed 进行基础过滤，
+        /// 然后处理 ImportCriteria 特有的属性（修改时间、目录通配符、文件名通配符）
         /// </summary>
         /// <param name="fileInfo">文件信息</param>
         /// <param name="criteria">筛选条件</param>
-        /// <param name="checkExtension">是否检查扩展名（预筛选阶段不需要）</param>
-        /// <param name="checkNamePattern">是否检查文件名模式（预筛选阶段不需要）</param>
+        /// <param name="checkNamePattern">是否检查文件名通配符模式（预筛选阶段不需要）</param>
         /// <returns>是否符合条件</returns>
-        private bool IsFileMatchCriteria(FileInfo fileInfo, ImportCriteria criteria, bool checkExtension = true, bool checkNamePattern = false)
+        private bool IsFileMatchCriteria(FileInfo fileInfo, ImportCriteria criteria, bool checkNamePattern = false)
         {
-            // 检查文件扩展名
-            if (checkExtension && criteria.AllowedExtensions.Any() && 
-                !criteria.AllowedExtensions.Contains(fileInfo.Extension, StringComparer.OrdinalIgnoreCase))
+            // 1. 首先调用基类的 IsFileAllowed 进行基础过滤
+            // 这包括：自定义过滤函数、文件大小、临时文件、扩展名（允许/排除）、文件名正则模式
+            if (!criteria.IsFileAllowed(fileInfo.FullName, fileInfo.Length))
             {
                 return false;
             }
 
-            // 检查文件大小
-            if (criteria.MinFileSize.HasValue && fileInfo.Length < criteria.MinFileSize.Value)
-            {
-                return false;
-            }
-
-            if (criteria.MaxFileSize.HasValue && fileInfo.Length > criteria.MaxFileSize.Value)
-            {
-                return false;
-            }
-
-            // 检查修改时间
+            // 2. 检查修改时间（ImportCriteria 特有）
             if (criteria.MinModifiedTime.HasValue && fileInfo.LastWriteTime < criteria.MinModifiedTime.Value)
             {
                 return false;
@@ -648,7 +608,7 @@ namespace FileRecord.Services
                 return false;
             }
 
-            // 检查目录路径匹配
+            // 3. 检查目录路径通配符匹配（ImportCriteria 特有）
             if (criteria.AllowedDirectoryPatterns.Any())
             {
                 bool pathMatch = false;
@@ -666,11 +626,11 @@ namespace FileRecord.Services
                 }
             }
 
-            // 检查文件名模式
-            if (checkNamePattern && criteria.FileNamePatterns.Any())
+            // 4. 检查文件名通配符模式（ImportCriteria 特有，与基类的正则模式不同）
+            if (checkNamePattern && criteria.FileNameWildcardPatterns.Any())
             {
                 bool nameMatch = false;
-                foreach (var pattern in criteria.FileNamePatterns)
+                foreach (var pattern in criteria.FileNameWildcardPatterns)
                 {
                     if (IsNameMatchPattern(fileInfo.Name, pattern))
                     {
@@ -684,15 +644,6 @@ namespace FileRecord.Services
                 }
             }
             
-            // 检查FileFilterRule过滤规则
-            if (criteria.FilterRule != null)
-            {
-                if (!criteria.FilterRule.IsFileAllowed(fileInfo.FullName, fileInfo.Length))
-                {
-                    return false;
-                }
-            }
-
             return true;
         }
 
@@ -701,7 +652,7 @@ namespace FileRecord.Services
         /// </summary>
         private bool PassesDetailedChecks(FileInfo fileInfo, ImportCriteria criteria)
         {
-            return IsFileMatchCriteria(fileInfo, criteria, checkExtension: false, checkNamePattern: false);
+            return IsFileMatchCriteria(fileInfo, criteria, checkNamePattern: false);
         }
 
         /// <summary>

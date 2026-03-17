@@ -47,11 +47,13 @@ namespace FileRecord.Utils
         /// <summary>
         /// 允许的文件名模式，使用正则表达式
         /// 如果设置了此属性，则只允许匹配这些模式的文件名
+        /// 注意：如需使用通配符（如 *.txt），请使用 FileFilterRuleFactory.CreateWildcardRule() 创建规则
         /// </summary>
         public string[] FileNamePatterns { get; set; } = Array.Empty<string>();
 
         /// <summary>
         /// 排除的文件名模式，使用正则表达式
+        /// 注意：如需使用通配符，请使用 FileFilterRuleFactory.CreateWildcardRule() 创建规则
         /// </summary>
         public string[] ExcludedFileNamePatterns { get; set; } = Array.Empty<string>();
 

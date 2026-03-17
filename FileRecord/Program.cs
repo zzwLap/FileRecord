@@ -162,34 +162,26 @@ static async Task RunDataImportAsync()
     var criteria = new FileRecord.Services.DataImportService.ImportCriteria();
     
     // 询问是否设置文件过滤规则
-    FileRecord.Utils.FileFilterRule? filterRule = FileRecord.Utils.FileFilterRuleHelper.GetInteractiveFilterRule("是否要设置文件过滤规则？(y/n，默认为n): ", "请选择过滤规则类型:");
-    
-    if (filterRule != null)
-    {
-        // 将过滤规则添加到导入条件中
-        criteria.FilterRule = filterRule;
-    }
-    
-
-    
-    // 询问是否设置文件大小范围
+    // 询问是否设置文件大小范围（继承自 FileFilterRule 的属性）
     Console.WriteLine("是否要设置文件大小范围？(y/n，默认为n): ");
     string? sizeFilterInput = Console.ReadLine();
     if (!string.IsNullOrEmpty(sizeFilterInput) && sizeFilterInput.ToLower().StartsWith("y"))
     {
-        Console.Write("请输入最小文件大小 (KB): ");
+        Console.Write("请输入最小文件大小 (KB，0表示无限制): ");
         if (long.TryParse(Console.ReadLine(), out long minSizeKB) && minSizeKB >= 0)
         {
             criteria.MinFileSize = minSizeKB * 1024; // 转换为字节
         }
         
-        Console.Write("请输入最大文件大小 (KB): ");
+        Console.Write("请输入最大文件大小 (KB，0表示无限制): ");
         if (long.TryParse(Console.ReadLine(), out long maxSizeKB) && maxSizeKB > 0)
         {
             criteria.MaxFileSize = maxSizeKB * 1024; // 转换为字节
         }
         
-        Console.WriteLine($"已设置文件大小范围: {(criteria.MinFileSize?.ToString() ?? "无限制")} - {(criteria.MaxFileSize?.ToString() ?? "无限制")} 字节");
+        string minDisplay = criteria.MinFileSize == 0 ? "无限制" : criteria.MinFileSize.ToString();
+        string maxDisplay = criteria.MaxFileSize == long.MaxValue ? "无限制" : criteria.MaxFileSize.ToString();
+        Console.WriteLine($"已设置文件大小范围: {minDisplay} - {maxDisplay} 字节");
     }
     
     // 询问是否设置修改时间范围
@@ -245,8 +237,8 @@ static async Task RunDataImportAsync()
         string? nameInput = Console.ReadLine();
         if (!string.IsNullOrWhiteSpace(nameInput))
         {
-            criteria.FileNamePatterns = StringSplitHelper.SplitAndTrimToList(nameInput, ',');
-            Console.WriteLine($"已设置文件名通配符过滤: {string.Join(", ", criteria.FileNamePatterns)}");
+            criteria.FileNameWildcardPatterns = StringSplitHelper.SplitAndTrimToList(nameInput, ',');
+            Console.WriteLine($"已设置文件名通配符过滤: {string.Join(", ", criteria.FileNameWildcardPatterns)}");
         }
     }
     
