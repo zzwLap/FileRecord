@@ -176,19 +176,13 @@ namespace FileRecord.Utils
         }
 
         /// <summary>
-        /// 将通配符模式转换为正则表达式
+        /// 将通配符模式转换为正则表达式（使用WildcardMatcher工具类）
         /// </summary>
         /// <param name="wildcard">通配符模式，如 *a.*, *.txt 等</param>
         /// <returns>对应的正则表达式</returns>
         private static string ConvertWildcardToRegex(string wildcard)
         {
-            // 将通配符转换为正则表达式模式
-            string regex = wildcard
-                .Replace(".", "\\.")  // 转义点号
-                .Replace("?", ".")   // ? 匹配任意单个字符
-                .Replace("*", ".*"); // * 匹配任意多个字符
-            
-            return "^" + regex + "$"; // 完整匹配
+            return WildcardMatcher.ConvertWildcardToRegex(wildcard);
         }
     }
 }

@@ -17,6 +17,9 @@ namespace FileRecord.Services
         private readonly string _monitorGroupId;
         private readonly FileFilterRule? _filterRule;
         private bool _disposed = false;
+        private DateTime _lastEventTime = DateTime.Now;
+        private bool _watcherErrorOccurred = false;
+        private string? _lastErrorMessage = null;
 
         public FolderWatcherService(string folderPath, DatabaseContext databaseContext, FileUploadService uploadService, string monitorGroupId = "default", FileFilterRule? filterRule = null)
         {
@@ -25,6 +28,69 @@ namespace FileRecord.Services
             _uploadService = uploadService;
             _monitorGroupId = monitorGroupId;
             _filterRule = filterRule;
+        }
+
+        /// <summary>
+        /// 获取监控的文件夹路径
+        /// </summary>
+        public string FolderPath => _folderPath;
+
+        /// <summary>
+        /// 获取监控组ID
+        /// </summary>
+        public string MonitorGroupId => _monitorGroupId;
+
+        /// <summary>
+        /// 获取过滤规则
+        /// </summary>
+        public FileFilterRule? FilterRule => _filterRule;
+
+        /// <summary>
+        /// 检查监听器是否健康运行（仅检测FileSystemWatcher本身是否失效）
+        /// </summary>
+        public bool IsHealthy()
+        {
+            if (_disposed)
+                return false;
+
+            if (_watcher == null)
+                return false;
+
+            // 只有当FileSystemWatcher本身发生错误时才认为不健康
+            if (_watcherErrorOccurred)
+            {
+                Console.WriteLine($"监听器 {_folderPath} 的FileSystemWatcher发生错误，需要重启。错误: {_lastErrorMessage}");
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// 标记FileSystemWatcher发生错误
+        /// </summary>
+        private void OnWatcherError(object sender, ErrorEventArgs e)
+        {
+            _watcherErrorOccurred = true;
+            _lastErrorMessage = e.GetException()?.Message;
+            Console.WriteLine($"FileSystemWatcher错误 [{_folderPath}]: {_lastErrorMessage}");
+        }
+
+        /// <summary>
+        /// 重置错误状态（用于重启后）
+        /// </summary>
+        public void ResetErrorState()
+        {
+            _watcherErrorOccurred = false;
+            _lastErrorMessage = null;
+        }
+
+        /// <summary>
+        /// 获取文件信息（从数据库查询）
+        /// </summary>
+        private FileInfoModel? GetFileInfoFromDb(string filePath)
+        {
+            return _databaseContext.GetFileInfoByPath(filePath);
         }
 
         public void StartWatching()
@@ -43,6 +109,9 @@ namespace FileRecord.Services
             _watcher.Changed += OnFileChanged;
             _watcher.Deleted += OnFileDeleted;
             _watcher.Renamed += OnFileRenamed;
+            
+            // 监听FileSystemWatcher本身的错误事件
+            _watcher.Error += OnWatcherError;
 
             Console.WriteLine($"开始监听文件夹: {_folderPath}");
             Console.WriteLine("按'q' 键退出程序..");
@@ -62,60 +131,40 @@ namespace FileRecord.Services
         {
             try
             {
-                if (e.ChangeType == WatcherChangeTypes.Created || e.ChangeType == WatcherChangeTypes.Changed)
-                {
-                    // 等待文件操作完成，避免文件被占用的问题
-                    Thread.Sleep(FileRecord.Config.AppConfig.FileOperationWaitTimeMs);
-                    
-                    if (File.Exists(e.FullPath))
-                    {
-                        // 检查文件是否符合过滤规则
-                        var fileInfoForCheck = new FileInfo(e.FullPath);
-                        if (_filterRule != null && !_filterRule.IsFileAllowed(e.FullPath, fileInfoForCheck.Length))
-                        {
-                            Console.WriteLine($"跳过不符合过滤规则的文件: {e.Name}");
-                            return;
-                        }
+                _lastEventTime = DateTime.Now;
+                
+                if (e.ChangeType != WatcherChangeTypes.Created && e.ChangeType != WatcherChangeTypes.Changed)
+                    return;
 
-                        // 检查是否为临时文件，如果是则跳过
-                        if (FileUtils.IsTemporaryFile(e.FullPath))
-                        {
-                            Console.WriteLine($"跳过临时文件: {e.Name}");
-                            return;
-                        }
-                        
-                        var fileInfo = new FileInfoModel(e.FullPath);
-                        
-                        // 设置监控组ID
-                        fileInfo.MonitorGroupId = _monitorGroupId;
-                        
-                        // 计算MD5值
-                        try
-                        {
-                            fileInfo.MD5Hash = FileUtils.CalculateMD5(e.FullPath);
-                        }
-                        catch (Exception md5Ex)
-                        {
-                            Console.WriteLine($"计算MD5失败 {e.Name}: {md5Ex.Message}");
-                            fileInfo.MD5Hash = string.Empty;
-                        }
-                        
-                        // 如果文件已存在数据库中，检查是否真的有变化
-                        var existingFile = GetFileInfoByPath(e.FullPath);
-                        if (existingFile != null && existingFile.IsDeleted)
-                        {
-                            // 文件之前被标记为删除，现在重新创建
-                            fileInfo.IsDeleted = false; // 重置删除标记
-                            Console.WriteLine($"文件重新创建: {e.Name}");
-                        }
-                        
-                        _databaseContext.InsertFileInfo(fileInfo);
-                        Console.WriteLine($"文件已记录 {e.Name} ({e.ChangeType})");
-                        
-                        // 触发上传服务
-                        _uploadService.EnqueueNewOrModifiedFile(e.FullPath);
-                    }
+                // 等待文件操作完成，避免文件被占用的问题
+                Thread.Sleep(FileRecord.Config.AppConfig.FileOperationWaitTimeMs);
+                
+                if (!File.Exists(e.FullPath))
+                    return;
+
+                var fileInfoForCheck = new FileInfo(e.FullPath);
+                
+                // 使用通用方法检查文件是否应该被处理
+                if (!FileProcessor.ShouldProcessFile(e.FullPath, _filterRule, fileInfoForCheck.Length))
+                    return;
+                
+                // 使用通用方法创建文件信息模型
+                var fileInfo = FileProcessor.CreateFileInfoModel(e.FullPath, _monitorGroupId);
+                
+                // 如果文件已存在数据库中，检查是否真的有变化
+                var existingFile = GetFileInfoFromDb(e.FullPath);
+                if (existingFile != null && existingFile.IsDeleted)
+                {
+                    // 文件之前被标记为删除，现在重新创建
+                    fileInfo.IsDeleted = false; // 重置删除标记
+                    Console.WriteLine($"文件重新创建: {e.Name}");
                 }
+                
+                _databaseContext.InsertFileInfo(fileInfo);
+                Console.WriteLine($"文件已记录 {e.Name} ({e.ChangeType})");
+                
+                // 触发上传服务
+                _uploadService.EnqueueNewOrModifiedFile(e.FullPath);
             }
             catch (Exception ex)
             {
@@ -127,8 +176,10 @@ namespace FileRecord.Services
         {
             try
             {
+                _lastEventTime = DateTime.Now;
+                
                 // 不删除记录，而是设置删除标记
-                var existingFile = GetFileInfoByPath(e.FullPath);
+                var existingFile = GetFileInfoFromDb(e.FullPath);
                 if (existingFile != null)
                 {
                     existingFile.IsDeleted = true;
@@ -150,23 +201,19 @@ namespace FileRecord.Services
         {
             try
             {
-                // 检查新文件是否符合过滤规则
+                _lastEventTime = DateTime.Now;
+                
                 var fileInfoForCheck = new FileInfo(e.FullPath);
-                if (_filterRule != null && !_filterRule.IsFileAllowed(e.FullPath, fileInfoForCheck.Length))
+                
+                // 使用通用方法检查文件是否应该被处理
+                if (!FileProcessor.ShouldProcessFile(e.FullPath, _filterRule, fileInfoForCheck.Length))
                 {
                     Console.WriteLine($"跳过不符合过滤规则的文件重命名: {e.Name}");
                     return;
                 }
                 
-                // 检查新文件是否为临时文件
-                if (FileUtils.IsTemporaryFile(e.FullPath))
-                {
-                    Console.WriteLine($"跳过临时文件重命名: {e.Name}");
-                    return;
-                }
-                
                 // 标记旧文件记录为删除状态
-                var oldFile = GetFileInfoByPath(e.OldFullPath);
+                var oldFile = GetFileInfoFromDb(e.OldFullPath);
                 if (oldFile != null)
                 {
                     oldFile.IsDeleted = true;
@@ -177,24 +224,8 @@ namespace FileRecord.Services
                 // 如果新文件存在，添加新记录
                 if (File.Exists(e.FullPath))
                 {
-                    var fileInfo = new FileInfoModel(e.FullPath);
-                    
-                    // 设置监控组ID
-                    fileInfo.MonitorGroupId = _monitorGroupId;
-                    
-                    // 计算MD5值
-                    try
-                    {
-                        fileInfo.MD5Hash = FileUtils.CalculateMD5(e.FullPath);
-                    }
-                    catch (Exception md5Ex)
-                    {
-                        Console.WriteLine($"计算MD5失败 {e.Name}: {md5Ex.Message}");
-                        fileInfo.MD5Hash = string.Empty;
-                    }
-                    
-                    // 重置删除标记（如果文件之前被删除后重命名）
-                    fileInfo.IsDeleted = false;
+                    // 使用通用方法创建文件信息模型
+                    var fileInfo = FileProcessor.CreateFileInfoModel(e.FullPath, _monitorGroupId);
                     
                     _databaseContext.InsertFileInfo(fileInfo);
                     Console.WriteLine($"文件已重命名并记录 {e.OldName} -> {e.Name}");
@@ -213,92 +244,18 @@ namespace FileRecord.Services
         {
             Console.WriteLine("正在处理现有文件...");
             
-            var allFiles = Directory.GetFiles(_folderPath, "*", SearchOption.AllDirectories);
-            int processedCount = 0;
-            
-            foreach (var filePath in allFiles)
-            {
-                try
-                {
-                    // 检查文件是否符合过滤规则
-                    var fileInfoForCheck = new FileInfo(filePath);
-                    if (_filterRule != null && !_filterRule.IsFileAllowed(filePath, fileInfoForCheck.Length))
-                    {
-                        Console.WriteLine($"跳过不符合过滤规则的文件: {Path.GetFileName(filePath)}");
-                        continue;
-                    }
-                    
-                    // 跳过临时文件
-                    if (FileUtils.IsTemporaryFile(filePath))
-                    {
-                        Console.WriteLine($"跳过临时文件: {Path.GetFileName(filePath)}");
-                        continue;
-                    }
-                    
-                    var fileInfo = new FileInfoModel(filePath);
-                    
-                    // 设置监控组ID
-                    fileInfo.MonitorGroupId = _monitorGroupId;
-                    
-                    // 计算MD5值
-                    try
-                    {
-                        fileInfo.MD5Hash = FileUtils.CalculateMD5(filePath);
-                    }
-                    catch (Exception md5Ex)
-                    {
-                        Console.WriteLine($"计算MD5失败 {Path.GetFileName(filePath)}: {md5Ex.Message}");
-                        fileInfo.MD5Hash = string.Empty;
-                    }
-                    
-                    // 重置删除标记（如果是重新发现的文件）
-                    fileInfo.IsDeleted = false;
-                    
-                    _databaseContext.InsertFileInfo(fileInfo);
-                    processedCount++;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"处理现有文件 {filePath} 时出错: {ex.Message}");
-                }
-            }
+            // 使用通用方法处理现有文件
+            int processedCount = FileProcessor.ProcessExistingFiles(
+                _folderPath, 
+                _monitorGroupId, 
+                _filterRule,
+                fileInfoModel => _databaseContext.InsertFileInfo(fileInfoModel)
+            );
             
             Console.WriteLine($"已处理 {processedCount} 个现有文件");
         }
 
-        private FileInfoModel? GetFileInfoByPath(string filePath)
-        {
-            using var connection = new Microsoft.Data.Sqlite.SqliteConnection(_databaseContext.GetConnectionString());
-            connection.Open();
-            
-            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, MonitorGroupId, IsUploaded, UploadTime, MD5Hash, IsDeleted FROM FileInfos WHERE FilePath = @FilePath";
-            
-            using var command = new Microsoft.Data.Sqlite.SqliteCommand(selectSql, connection);
-            command.Parameters.AddWithValue("@FilePath", filePath);
-            
-            using var reader = command.ExecuteReader();
-            if (reader.Read())
-            {
-                return new FileInfoModel
-                {
-                    Id = reader.GetInt32(0),
-                    FileName = reader.GetString(1),
-                    FilePath = reader.GetString(2),
-                    FileSize = reader.GetInt64(3),
-                    CreatedTime = DateTime.Parse(reader.GetString(4)),
-                    ModifiedTime = DateTime.Parse(reader.GetString(5)),
-                    Extension = reader.GetString(6),
-                    DirectoryPath = reader.GetString(7),
-                    MonitorGroupId = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
-                    IsUploaded = reader.GetInt32(9) == 1,
-                    UploadTime = reader.IsDBNull(10) ? (DateTime?)null : DateTime.Parse(reader.GetString(10)),
-                    MD5Hash = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
-                    IsDeleted = reader.GetInt32(12) == 1
-                };
-            }
-            
-            return null;
-        }
+
         
         protected virtual void Dispose(bool disposing)
         {

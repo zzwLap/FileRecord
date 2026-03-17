@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 using FileRecord.Data;
 using FileRecord.Services;
 using FileRecord.Services.Upload;
@@ -78,7 +81,7 @@ bool useFilters = !string.IsNullOrEmpty(useFilterInput) && useFilterInput.ToLowe
 FileFilterRule? defaultFilterRule = FileRecord.Utils.FileFilterRuleHelper.GetInteractiveFilterRule("是否要为监控目录设置文件过滤规则？(y/n，默认为n): ", "请选择过滤规则类型:");
 
 // 解析路径列表
-string[] folderPaths = folderPathsInput.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+string[] folderPaths = StringSplitHelper.SplitAndTrim(folderPathsInput, ';');
 
 // 添加每个路径到监控列表
 foreach (var path in folderPaths)
@@ -228,7 +231,7 @@ static async Task RunDataImportAsync()
         string? pathInput = Console.ReadLine();
         if (!string.IsNullOrWhiteSpace(pathInput))
         {
-            criteria.AllowedDirectoryPatterns = pathInput.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            criteria.AllowedDirectoryPatterns = StringSplitHelper.SplitAndTrimToList(pathInput, ',');
             Console.WriteLine($"已设置目录路径过滤: {string.Join(", ", criteria.AllowedDirectoryPatterns)}");
         }
     }
@@ -242,7 +245,7 @@ static async Task RunDataImportAsync()
         string? nameInput = Console.ReadLine();
         if (!string.IsNullOrWhiteSpace(nameInput))
         {
-            criteria.FileNamePatterns = nameInput.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+            criteria.FileNamePatterns = StringSplitHelper.SplitAndTrimToList(nameInput, ',');
             Console.WriteLine($"已设置文件名通配符过滤: {string.Join(", ", criteria.FileNamePatterns)}");
         }
     }
@@ -288,7 +291,7 @@ static async Task RunMissingFileDetectionAsync()
     }
     
     // 解析路径列表
-    string[] folderPaths = folderPathsInput.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    string[] folderPaths = StringSplitHelper.SplitAndTrim(folderPathsInput, ';');
     
     // 验证路径是否存在
     var validPaths = new List<string>();
@@ -456,4 +459,83 @@ static async Task ImportMissingFilesAsync(DatabaseContext databaseContext, List<
     // 将新导入的文件添加到上传队列
     Console.WriteLine("将新导入的文件添加到上传队列...");
     uploadService.EnqueueAllUnuploadedFiles();
+}
+
+/// <summary>
+/// 用户输入辅助方法
+/// </summary>
+static class ConsoleInput
+{
+    /// <summary>
+    /// 询问用户是否确认（y/n）
+    /// </summary>
+    public static bool AskYesNo(string prompt, bool defaultValue = false)
+    {
+        Console.WriteLine(prompt);
+        string? input = Console.ReadLine();
+        return !string.IsNullOrEmpty(input) && input.ToLower().StartsWith("y");
+    }
+
+    /// <summary>
+    /// 获取用户输入的字符串
+    /// </summary>
+    public static string GetString(string prompt, string defaultValue = "")
+    {
+        Console.Write(prompt);
+        string? input = Console.ReadLine();
+        return string.IsNullOrWhiteSpace(input) ? defaultValue : input.Trim();
+    }
+
+    /// <summary>
+    /// 获取用户输入的整数
+    /// </summary>
+    public static long? GetLong(string prompt)
+    {
+        Console.Write(prompt);
+        if (long.TryParse(Console.ReadLine(), out long value) && value >= 0)
+        {
+            return value;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 获取用户输入的日期时间（支持相对天数或绝对日期）
+    /// </summary>
+    public static DateTime? GetDateTime(string prompt)
+    {
+        Console.Write(prompt);
+        string? input = Console.ReadLine();
+        
+        if (string.IsNullOrWhiteSpace(input))
+            return null;
+
+        // 尝试解析为天数
+        if (int.TryParse(input, out int days))
+        {
+            return DateTime.Now.AddDays(-days);
+        }
+        
+        // 尝试解析为日期
+        if (DateTime.TryParse(input, out DateTime date))
+        {
+            return date;
+        }
+        
+        return null;
+    }
+
+    /// <summary>
+    /// 获取逗号分隔的字符串列表
+    /// </summary>
+    public static List<string> GetStringList(string prompt)
+    {
+        Console.Write(prompt);
+        string? input = Console.ReadLine();
+        
+        if (string.IsNullOrWhiteSpace(input))
+            return new List<string>();
+        
+        return StringSplitHelper.SplitAndTrimToList(input, ',');
+    }
 }

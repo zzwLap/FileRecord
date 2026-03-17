@@ -1,11 +1,10 @@
-        /// <summary>
-        /// 添加要监控的文件夹
-        /// </summary>
-        /// <param name="folderPath">要监控的文件夹路径</param>
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using FileRecord.Config;
 using FileRecord.Data;
 using FileRecord.Models;
 using FileRecord.Services.Upload;
@@ -16,15 +15,29 @@ namespace FileRecord.Services
     public class MultiFolderWatcherService : IDisposable
     {
         private readonly Dictionary<string, FolderWatcherService> _watchers;
+        private readonly Dictionary<string, WatcherConfig> _watcherConfigs;
         private readonly DatabaseContext _databaseContext;
         private readonly FileUploadService _uploadService;
         private bool _disposed = false;
+        private Timer? _healthCheckTimer;
+        private readonly TimeSpan _healthCheckInterval = TimeSpan.FromMinutes(AppConfig.HealthCheckIntervalMinutes);
+
+        /// <summary>
+        /// 监听器配置信息，用于故障恢复时重建监听器
+        /// </summary>
+        private class WatcherConfig
+        {
+            public string FolderPath { get; set; } = string.Empty;
+            public string MonitorGroupId { get; set; } = string.Empty;
+            public FileFilterRule? FilterRule { get; set; }
+        }
 
         public MultiFolderWatcherService(
             DatabaseContext databaseContext, 
             FileUploadService uploadService)
         {
             _watchers = new Dictionary<string, FolderWatcherService>();
+            _watcherConfigs = new Dictionary<string, WatcherConfig>();
             _databaseContext = databaseContext;
             _uploadService = uploadService;
         }
@@ -47,6 +60,14 @@ namespace FileRecord.Services
                 Console.WriteLine($"Directory {folderPath} is already being watched.");
                 return;
             }
+
+            // 保存配置信息，用于故障恢复
+            _watcherConfigs[folderPath] = new WatcherConfig
+            {
+                FolderPath = folderPath,
+                MonitorGroupId = monitorGroupId,
+                FilterRule = filterRule
+            };
 
             // 创建FolderWatcherService实例并设置MonitorGroupId
             var watcher = new FolderWatcherService(folderPath, _databaseContext, _uploadService, monitorGroupId, filterRule);
@@ -92,8 +113,106 @@ namespace FileRecord.Services
                 }
             }
 
+            // 启动健康检查定时器
+            StartHealthCheckTimer();
+
             Console.WriteLine($"Multi-folder monitoring started. Watching {_watchers.Count} folders.");
             Console.WriteLine("Press 'q' to exit...");
+        }
+
+        /// <summary>
+        /// 启动健康检查定时器
+        /// </summary>
+        private void StartHealthCheckTimer()
+        {
+            _healthCheckTimer = new Timer(CheckWatchersHealth, null, _healthCheckInterval, _healthCheckInterval);
+            Console.WriteLine($"健康检查定时器已启动，检查间隔: {_healthCheckInterval.TotalMinutes} 分钟");
+        }
+
+        /// <summary>
+        /// 检查所有监听器的健康状态
+        /// </summary>
+        private void CheckWatchersHealth(object? state)
+        {
+            if (_disposed)
+                return;
+
+            var unhealthyWatchers = new List<string>();
+
+            // 检查每个监听器的状态
+            foreach (var kvp in _watchers)
+            {
+                var folderPath = kvp.Key;
+                var watcher = kvp.Value;
+
+                if (!watcher.IsHealthy())
+                {
+                    unhealthyWatchers.Add(folderPath);
+                    Console.WriteLine($"检测到监听器故障: {folderPath}");
+                }
+            }
+
+            // 重启不健康的监听器
+            foreach (var folderPath in unhealthyWatchers)
+            {
+                RestartWatcher(folderPath);
+            }
+        }
+
+        /// <summary>
+        /// 重启指定路径的监听器
+        /// </summary>
+        private void RestartWatcher(string folderPath)
+        {
+            try
+            {
+                Console.WriteLine($"正在重启监听器: {folderPath}");
+
+                // 获取配置信息
+                if (!_watcherConfigs.TryGetValue(folderPath, out var config))
+                {
+                    Console.WriteLine($"无法找到监听器配置: {folderPath}");
+                    return;
+                }
+
+                // 停止并释放旧的监听器
+                if (_watchers.TryGetValue(folderPath, out var oldWatcher))
+                {
+                    try
+                    {
+                        oldWatcher.StopWatching();
+                        oldWatcher.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"停止旧监听器时出错: {ex.Message}");
+                    }
+                }
+
+                // 创建新的监听器
+                var newWatcher = new FolderWatcherService(
+                    config.FolderPath, 
+                    _databaseContext, 
+                    _uploadService, 
+                    config.MonitorGroupId, 
+                    config.FilterRule);
+
+                // 替换旧的监听器
+                _watchers[folderPath] = newWatcher;
+
+                // 启动新的监听器
+                newWatcher.ProcessExistingFiles();
+                newWatcher.StartWatching();
+                
+                // 重置错误状态
+                newWatcher.ResetErrorState();
+
+                Console.WriteLine($"监听器已成功重启: {folderPath}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"重启监听器失败 {folderPath}: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -101,6 +220,9 @@ namespace FileRecord.Services
         /// </summary>
         public void StopWatching()
         {
+            // 停止健康检查定时器
+            _healthCheckTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            
             foreach (var kvp in _watchers)
             {
                 kvp.Value.StopWatching();
@@ -139,12 +261,17 @@ namespace FileRecord.Services
             {
                 StopWatching();
                 
+                // 释放定时器
+                _healthCheckTimer?.Dispose();
+                _healthCheckTimer = null;
+                
                 foreach (var watcher in _watchers.Values)
                 {
                     watcher?.Dispose();
                 }
                 
                 _watchers.Clear();
+                _watcherConfigs.Clear();
                 _disposed = true;
             }
         }

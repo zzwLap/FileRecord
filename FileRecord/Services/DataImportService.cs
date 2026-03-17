@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using FileRecord.Data;
 using FileRecord.Models;
@@ -177,10 +178,14 @@ namespace FileRecord.Services
             var lockObject = new object();
 
             // 使用限制并发度的并行处理，防止 IO 锁死
+#if NET472
+            await ParallelCompat.ForEachAsync(fileEnum, async (filePath, ct) =>
+#else
             await Parallel.ForEachAsync(fileEnum, new ParallelOptions 
             { 
                 MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 2) 
             }, async (filePath, ct) =>
+#endif
             {
                 Interlocked.Increment(ref totalScanned);
 
@@ -423,8 +428,12 @@ namespace FileRecord.Services
             var failedFiles = new ConcurrentBag<(string filePath, string errorMessage)>();
             
             // 并行处理文件，计算MD5等信息
+#if NET472
+            await ParallelCompat.ForEachAsync(filteredFiles, async (filePath, ct) =>
+#else
             await Parallel.ForEachAsync(filteredFiles, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount }, 
                 async (filePath, ct) =>
+#endif
                 {
                     try
                     {
@@ -601,75 +610,17 @@ namespace FileRecord.Services
         }
 
         /// <summary>
-        /// 检查文件是否通过详细检查（除了预筛选的条件之外）
+        /// 检查文件是否符合筛选条件（统一入口）
         /// </summary>
         /// <param name="fileInfo">文件信息</param>
         /// <param name="criteria">筛选条件</param>
-        /// <returns>是否通过检查</returns>
-        private bool PassesDetailedChecks(FileInfo fileInfo, ImportCriteria criteria)
-        {
-            // 检查文件大小
-            if (criteria.MinFileSize.HasValue && fileInfo.Length < criteria.MinFileSize.Value)
-            {
-                return false;
-            }
-
-            if (criteria.MaxFileSize.HasValue && fileInfo.Length > criteria.MaxFileSize.Value)
-            {
-                return false;
-            }
-
-            // 检查修改时间
-            if (criteria.MinModifiedTime.HasValue && fileInfo.LastWriteTime < criteria.MinModifiedTime.Value)
-            {
-                return false;
-            }
-
-            if (criteria.MaxModifiedTime.HasValue && fileInfo.LastWriteTime > criteria.MaxModifiedTime.Value)
-            {
-                return false;
-            }
-
-            // 检查目录路径匹配
-            if (criteria.AllowedDirectoryPatterns.Any())
-            {
-                bool pathMatch = false;
-                foreach (var pattern in criteria.AllowedDirectoryPatterns)
-                {
-                    if (IsPathMatchPattern(fileInfo.DirectoryName, pattern))
-                    {
-                        pathMatch = true;
-                        break;
-                    }
-                }
-                if (!pathMatch)
-                {
-                    return false;
-                }
-            }
-            
-            // 检查FileFilterRule过滤规则
-            if (criteria.FilterRule != null)
-            {
-                if (!criteria.FilterRule.IsFileAllowed(fileInfo.FullName, fileInfo.Length))
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        /// <summary>
-        /// 检查文件是否符合筛选条件
-        /// </summary>
-        /// <param name="fileInfo">文件信息</param>
-        /// <param name="criteria">筛选条件</param>
+        /// <param name="checkExtension">是否检查扩展名（预筛选阶段不需要）</param>
+        /// <param name="checkNamePattern">是否检查文件名模式（预筛选阶段不需要）</param>
         /// <returns>是否符合条件</returns>
-        private bool IsFileMatchCriteria(FileInfo fileInfo, ImportCriteria criteria)
+        private bool IsFileMatchCriteria(FileInfo fileInfo, ImportCriteria criteria, bool checkExtension = true, bool checkNamePattern = false)
         {
             // 检查文件扩展名
-            if (criteria.AllowedExtensions.Any() && 
+            if (checkExtension && criteria.AllowedExtensions.Any() && 
                 !criteria.AllowedExtensions.Contains(fileInfo.Extension, StringComparer.OrdinalIgnoreCase))
             {
                 return false;
@@ -703,7 +654,7 @@ namespace FileRecord.Services
                 bool pathMatch = false;
                 foreach (var pattern in criteria.AllowedDirectoryPatterns)
                 {
-                    if (IsPathMatchPattern(fileInfo.DirectoryName, pattern))
+                    if (IsPathMatchPattern(fileInfo.DirectoryName ?? string.Empty, pattern))
                     {
                         pathMatch = true;
                         break;
@@ -716,7 +667,7 @@ namespace FileRecord.Services
             }
 
             // 检查文件名模式
-            if (criteria.FileNamePatterns.Any())
+            if (checkNamePattern && criteria.FileNamePatterns.Any())
             {
                 bool nameMatch = false;
                 foreach (var pattern in criteria.FileNamePatterns)
@@ -746,70 +697,27 @@ namespace FileRecord.Services
         }
 
         /// <summary>
-        /// 检查路径是否匹配模式（支持通配符）
+        /// 检查文件是否通过详细检查（向后兼容，调用统一方法）
         /// </summary>
-        /// <param name="path">实际路径</param>
-        /// <param name="pattern">模式（支持*和**）</param>
-        /// <returns>是否匹配</returns>
+        private bool PassesDetailedChecks(FileInfo fileInfo, ImportCriteria criteria)
+        {
+            return IsFileMatchCriteria(fileInfo, criteria, checkExtension: false, checkNamePattern: false);
+        }
+
+        /// <summary>
+        /// 检查路径是否匹配模式（支持通配符）- 使用WildcardMatcher工具类
+        /// </summary>
         private bool IsPathMatchPattern(string path, string pattern)
         {
-            if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(pattern))
-                return string.Equals(path, pattern, StringComparison.OrdinalIgnoreCase);
-
-            // 处理通配符模式
-            pattern = pattern.Replace(".", "\\.").Replace("?", ".").Replace("**", ".*");
-            pattern = pattern.Replace("*", "[^/\\\\]*");
-            pattern = "^" + pattern + "$";
-
-            try
-            {
-                return Regex.IsMatch(path, pattern, RegexOptions.IgnoreCase);
-            }
-            catch
-            {
-                // 如果正则表达式无效，回退到简单的字符串比较
-                return path.Contains(pattern);
-            }
+            return WildcardMatcher.IsPathMatch(path, pattern);
         }
 
         /// <summary>
-        /// 检查文件名是否匹配模式（支持通配符）
+        /// 检查文件名是否匹配模式（支持通配符）- 使用WildcardMatcher工具类
         /// </summary>
-        /// <param name="name">实际文件名</param>
-        /// <param name="pattern">模式（支持*和?）</param>
-        /// <returns>是否匹配</returns>
         private bool IsNameMatchPattern(string name, string pattern)
         {
-            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(pattern))
-                return string.Equals(name, pattern, StringComparison.OrdinalIgnoreCase);
-
-            // 将通配符转换为正则表达式
-            string regexPattern = ConvertWildcardToRegex(pattern);
-            
-            try
-            {
-                return Regex.IsMatch(name, regexPattern, RegexOptions.IgnoreCase);
-            }
-            catch
-            {
-                // 如果正则表达式无效，回退到简单的字符串比较
-                return name.Contains(pattern);
-            }
-        }
-
-        /// <summary>
-        /// 将通配符模式转换为正则表达式
-        /// </summary>
-        /// <param name="wildcard">通配符模式</param>
-        /// <returns>正则表达式</returns>
-        private string ConvertWildcardToRegex(string wildcard)
-        {
-            string regex = wildcard
-                .Replace(".", "\\.")  // 转义点号
-                .Replace("?", ".")   // ? 匹配任意单个字符
-                .Replace("*", ".*"); // * 匹配任意多个字符
-            
-            return "^" + regex + "$"; // 完整匹配
+            return WildcardMatcher.IsNameMatch(name, pattern);
         }
         
         /// <summary>

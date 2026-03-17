@@ -101,7 +101,7 @@ namespace FileRecord.Utils
             string? extInput = Console.ReadLine();
             if (!string.IsNullOrWhiteSpace(extInput))
             {
-                string[] extArray = extInput.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                string[] extArray = StringSplitHelper.SplitAndTrim(extInput, ',');
                 var rule = FileFilterRuleFactory.CreateCustomRule(extArray);
                 Console.WriteLine($"已设置扩展名过滤: {string.Join(", ", extArray)}");
                 return rule;

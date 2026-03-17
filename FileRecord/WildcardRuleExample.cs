@@ -81,7 +81,7 @@ public class WildcardRuleExample
                 var status = isMatch ? "✓" : "✗";
                 Console.WriteLine($"   {status} {file}");
             }
-            catch (System.Text.RegularExpressions.RegexParseException)
+            catch (ArgumentException)
             { 
                 Console.WriteLine($"   ! 无效的正则表达式: {file}");
             }

@@ -36,5 +36,25 @@ namespace FileRecord.Config
         /// 临时文件过滤器启用状态
         /// </summary>
         public const bool EnableTempFileFiltering = true;
+    
+        /// <summary>
+        /// 上传任务最大立即重试次数
+        /// </summary>
+        public const int MaxImmediateRetryCount = 3;
+    
+        /// <summary>
+        /// 上传任务指数退避最大指数（2^6 = 64秒）
+        /// </summary>
+        public const int MaxBackoffExponent = 6;
+    
+        /// <summary>
+        /// 上传任务默认重试间隔（分钟）
+        /// </summary>
+        public const int DefaultRetryIntervalMinutes = 30;
+    
+        /// <summary>
+        /// 监听器健康检查间隔（分钟）
+        /// </summary>
+        public const int HealthCheckIntervalMinutes = 1;
     }
 }

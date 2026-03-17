@@ -88,7 +88,7 @@ namespace FileRecord.Tools
                 {
                     FilePath = fileInfo.FullName,
                     FileName = fileInfo.Name,
-                    DirectoryPath = fileInfo.DirectoryName,
+                    DirectoryPath = fileInfo.DirectoryName ?? string.Empty,
                     Size = fileInfo.Length,
                     ModifiedTime = fileInfo.LastWriteTime,
                     CreatedTime = fileInfo.CreationTime,
@@ -143,7 +143,7 @@ namespace FileRecord.Tools
                 {
                     FilePath = fileInfo.FullName,
                     FileName = fileInfo.Name,
-                    DirectoryPath = fileInfo.DirectoryName,
+                    DirectoryPath = fileInfo.DirectoryName ?? string.Empty,
                     Size = fileInfo.Length,
                     ModifiedTime = fileInfo.LastWriteTime,
                     CreatedTime = fileInfo.CreationTime,
@@ -173,10 +173,10 @@ namespace FileRecord.Tools
 
             foreach (var file in unrecordedFiles.Take(50)) // 只显示前50个，避免输出过多
             {
-                string fileName = file.FileName.Length > 28 ? file.FileName.Substring(0, 25) + "..." : file.FileName;
-                string directoryPath = file.DirectoryPath.Length > 38 ? file.DirectoryPath.Substring(0, 35) + "..." : file.DirectoryPath;
+                string fileName = FormatUtils.Truncate(file.FileName, 28);
+                string directoryPath = FormatUtils.Truncate(file.DirectoryPath, 38);
                 
-                Console.WriteLine($"{fileName,-30} {directoryPath,-40} {file.Size,-12} {file.ModifiedTime:yyyy-MM-dd HH:mm:ss,-20}");
+                Console.WriteLine($"{fileName,-30} {directoryPath,-40} {file.Size,-12} {FormatUtils.FormatDateTime(file.ModifiedTime),-20}");
             }
 
             if (unrecordedFiles.Count > 50)
@@ -206,33 +206,14 @@ namespace FileRecord.Tools
 
             Console.WriteLine("\n统计信息：");
             Console.WriteLine($"总文件数: {unrecordedFiles.Count}");
-            Console.WriteLine($"总大小: {FormatFileSize(totalSize)}");
-            Console.WriteLine($"时间范围: {earliestTime:yyyy-MM-dd HH:mm:ss} - {latestTime:yyyy-MM-dd HH:mm:ss}");
+            Console.WriteLine($"总大小: {FormatUtils.FormatFileSize(totalSize)}");
+            Console.WriteLine($"时间范围: {FormatUtils.FormatDateTime(earliestTime)} - {FormatUtils.FormatDateTime(latestTime)}");
             Console.WriteLine("文件类型分布:");
             
             foreach (var group in extensionGroups.Take(10)) // 显示前10种类型的分布
             {
                 Console.WriteLine($"  {group.Key ?? "无扩展名"}: {group.Count()} 个文件");
             }
-        }
-
-        /// <summary>
-        /// 格式化文件大小
-        /// </summary>
-        /// <param name="bytes">字节数</param>
-        /// <returns>格式化的大小字符串</returns>
-        private string FormatFileSize(long bytes)
-        {
-            string[] sizes = { "B", "KB", "MB", "GB", "TB" };
-            double len = bytes;
-            int order = 0;
-            while (len >= 1024 && order < sizes.Length - 1)
-            {
-                order++;
-                len = len / 1024;
-            }
-
-            return $"{len:0.##} {sizes[order]}";
         }
     }
 
@@ -241,12 +222,12 @@ namespace FileRecord.Tools
     /// </summary>
     public class UnrecordedFileInfo
     {
-        public string FilePath { get; set; }
-        public string FileName { get; set; }
-        public string DirectoryPath { get; set; }
+        public string FilePath { get; set; } = string.Empty;
+        public string FileName { get; set; } = string.Empty;
+        public string DirectoryPath { get; set; } = string.Empty;
         public long Size { get; set; }
         public DateTime ModifiedTime { get; set; }
         public DateTime CreatedTime { get; set; }
-        public string Extension { get; set; }
+        public string Extension { get; set; } = string.Empty;
     }
 }

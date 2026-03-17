@@ -1,54 +1,22 @@
 using System;
-using Microsoft.Data.Sqlite;
 using System.Collections.Generic;
 using FileRecord.Models;
+using FileRecord.Data;
 
 namespace FileRecord.Tools
 {
     public class DbQueryTool
     {
-        private readonly string _connectionString;
+        private readonly DatabaseContext _databaseContext;
         
         public DbQueryTool(string dbPath = "fileinfo.db")
         {
-            _connectionString = $"Data Source={dbPath}";
+            _databaseContext = new DatabaseContext(dbPath);
         }
         
         public List<FileInfoModel> GetAllFiles()
         {
-            var files = new List<FileInfoModel>();
-            
-            using var connection = new SqliteConnection(_connectionString);
-            connection.Open();
-            
-            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, MonitorGroupId, IsUploaded, UploadTime, MD5Hash, IsDeleted FROM FileInfos ORDER BY CreatedTime DESC";
-            
-            using var command = new SqliteCommand(selectSql, connection);
-            using var reader = command.ExecuteReader();
-            
-            while (reader.Read())
-            {
-                var fileInfo = new FileInfoModel
-                {
-                    Id = reader.GetInt32(0),
-                    FileName = reader.GetString(1),
-                    FilePath = reader.GetString(2),
-                    FileSize = reader.GetInt64(3),
-                    CreatedTime = DateTime.Parse(reader.GetString(4)),
-                    ModifiedTime = DateTime.Parse(reader.GetString(5)),
-                    Extension = reader.GetString(6),
-                    DirectoryPath = reader.GetString(7),
-                    MonitorGroupId = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
-                    IsUploaded = reader.GetInt32(9) == 1,
-                    UploadTime = reader.IsDBNull(10) ? (DateTime?)null : DateTime.Parse(reader.GetString(10)),
-                    MD5Hash = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
-                    IsDeleted = reader.GetInt32(12) == 1
-                };
-                
-                files.Add(fileInfo);
-            }
-            
-            return files;
+            return _databaseContext.GetAllFiles();
         }
         
         public void PrintAllFiles()

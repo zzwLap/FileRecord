@@ -1,6 +1,16 @@
 using System;
-using Microsoft.Data.Sqlite;
+using System.Collections.Generic;
 using FileRecord.Models;
+
+#if NET472
+using System.Data.SQLite;
+using SqliteConnection = System.Data.SQLite.SQLiteConnection;
+using SqliteCommand = System.Data.SQLite.SQLiteCommand;
+using SqliteDataReader = System.Data.SQLite.SQLiteDataReader;
+using SqliteParameter = System.Data.SQLite.SQLiteParameter;
+#else
+using Microsoft.Data.Sqlite;
+#endif
 
 namespace FileRecord.Data
 {
@@ -18,7 +28,7 @@ namespace FileRecord.Data
         {
             using var connection = new SqliteConnection(_connectionString);
             connection.Open();
-            
+                    
             var createTableSql = @"
                 CREATE TABLE IF NOT EXISTS FileInfos (
                     Id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,87 +45,23 @@ namespace FileRecord.Data
                     MD5Hash TEXT,
                     IsDeleted INTEGER NOT NULL DEFAULT 0
                 )";
-            
+                    
             // VolumeUsnStates 表意义：
             // 1. 增量同步锚点：记录每个监控目录上一次同步完成时的 USN 序列号。
             // 2. 性能优化：通过该序列号，系统可直接查询 NTFS 变更日志获取增量数据，无需递归扫描百万级文件。
-            // 3. 可靠性：确保程序在重启后，能通过序列号“补课”，找回程序关闭期间发生的所有文件变更。
+            // 3. 可靠性：确保程序在重启后，能通过序列号"补课"，找回程序关闭期间发生的所有文件变更。
             var createUsnTableSql = @"
                 CREATE TABLE IF NOT EXISTS UsnPathMapping (
                     DirectoryPath TEXT PRIMARY KEY,
                     LastUsn INTEGER NOT NULL,
                     LastUpdated TEXT NOT NULL
                 )";
-            
+                    
             using var command = new SqliteCommand(createTableSql, connection);
             command.ExecuteNonQuery();
-
+        
             using var usnCommand = new SqliteCommand(createUsnTableSql, connection);
             usnCommand.ExecuteNonQuery();
-            
-            // 检查表结构
-            var alterTableSql = @"
-                PRAGMA table_info(FileInfos)";
-            
-            using var checkCommand = new SqliteCommand(alterTableSql, connection);
-            using var reader = checkCommand.ExecuteReader();
-            
-            bool hasIsUploaded = false;
-            bool hasUploadTime = false;
-            bool hasMD5Hash = false;
-            bool hasIsDeleted = false;
-            bool hasMonitorGroupId = false;
-            
-            while (reader.Read())
-            {
-                var columnName = reader.GetString(1);
-                if (columnName == "IsUploaded") hasIsUploaded = true;
-                if (columnName == "UploadTime") hasUploadTime = true;
-                if (columnName == "MD5Hash") hasMD5Hash = true;
-                if (columnName == "IsDeleted") hasIsDeleted = true;
-                if (columnName == "MonitorGroupId") hasMonitorGroupId = true;
-            }
-            reader.Close();
-            
-            // 如果没有IsUploaded列则添加
-            if (!hasIsUploaded)
-            {
-                var addIsUploadedColumnSql = "ALTER TABLE FileInfos ADD COLUMN IsUploaded INTEGER NOT NULL DEFAULT 0";
-                using var addIsUploadedCommand = new SqliteCommand(addIsUploadedColumnSql, connection);
-                addIsUploadedCommand.ExecuteNonQuery();
-            }
-            
-            // 如果没有UploadTime列则添加
-            if (!hasUploadTime)
-            {
-                var addUploadTimeColumnSql = "ALTER TABLE FileInfos ADD COLUMN UploadTime TEXT";
-                using var addUploadTimeCommand = new SqliteCommand(addUploadTimeColumnSql, connection);
-                addUploadTimeCommand.ExecuteNonQuery();
-            }
-            
-            // 如果没有MD5Hash列则添加
-            if (!hasMD5Hash)
-            {
-                var addMD5HashColumnSql = "ALTER TABLE FileInfos ADD COLUMN MD5Hash TEXT";
-                using var addMD5HashCommand = new SqliteCommand(addMD5HashColumnSql, connection);
-                addMD5HashCommand.ExecuteNonQuery();
-            }
-            
-            // 如果没有IsDeleted列则添加
-            if (!hasIsDeleted)
-            {
-                var addIsDeletedColumnSql = "ALTER TABLE FileInfos ADD COLUMN IsDeleted INTEGER NOT NULL DEFAULT 0";
-                using var addIsDeletedCommand = new SqliteCommand(addIsDeletedColumnSql, connection);
-                addIsDeletedCommand.ExecuteNonQuery();
-            }
-            
-            // 如果没有MonitorGroupId列则添加
-            if (!hasMonitorGroupId)
-            {
-                var addMonitorGroupIdColumnSql = "ALTER TABLE FileInfos ADD COLUMN MonitorGroupId TEXT";
-                using var addMonitorGroupIdCommand = new SqliteCommand(addMonitorGroupIdColumnSql, connection);
-                addMonitorGroupIdCommand.ExecuteNonQuery();
-            }
         }
         
         public void InsertFileInfo(FileInfoModel fileInfo)
@@ -172,6 +118,81 @@ namespace FileRecord.Data
             return Convert.ToInt32(result) > 0;
         }
         
+        /// <summary>
+        /// 根据文件ID获取文件信息
+        /// </summary>
+        /// <param name="fileId">文件ID</param>
+        /// <returns>文件信息模型，如果不存在则返回null</returns>
+        public FileInfoModel? GetFileInfoById(int fileId)
+        {
+            using var connection = new SqliteConnection(_connectionString);
+            connection.Open();
+            
+            var selectSql = @"SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, 
+                Extension, DirectoryPath, MonitorGroupId, IsUploaded, UploadTime, MD5Hash, IsDeleted 
+                FROM FileInfos WHERE Id = @Id";
+            
+            using var command = new SqliteCommand(selectSql, connection);
+            command.Parameters.AddWithValue("@Id", fileId);
+            
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                return MapReaderToFileInfoModel(reader);
+            }
+            
+            return null;
+        }
+
+        /// <summary>
+        /// 根据文件路径获取文件信息
+        /// </summary>
+        /// <param name="filePath">文件路径</param>
+        /// <returns>文件信息模型，如果不存在则返回null</returns>
+        public FileInfoModel? GetFileInfoByPath(string filePath)
+        {
+            using var connection = new SqliteConnection(_connectionString);
+            connection.Open();
+            
+            var selectSql = @"SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, 
+                Extension, DirectoryPath, MonitorGroupId, IsUploaded, UploadTime, MD5Hash, IsDeleted 
+                FROM FileInfos WHERE FilePath = @FilePath";
+            
+            using var command = new SqliteCommand(selectSql, connection);
+            command.Parameters.AddWithValue("@FilePath", filePath);
+            
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                return MapReaderToFileInfoModel(reader);
+            }
+            
+            return null;
+        }
+        
+        /// <summary>
+        /// 将数据库读取器映射为文件信息模型
+        /// </summary>
+        private FileInfoModel MapReaderToFileInfoModel(SqliteDataReader reader)
+        {
+            return new FileInfoModel
+            {
+                Id = reader.GetInt32(0),
+                FileName = reader.GetString(1),
+                FilePath = reader.GetString(2),
+                FileSize = reader.GetInt64(3),
+                CreatedTime = DateTime.Parse(reader.GetString(4)),
+                ModifiedTime = DateTime.Parse(reader.GetString(5)),
+                Extension = reader.GetString(6),
+                DirectoryPath = reader.GetString(7),
+                MonitorGroupId = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
+                IsUploaded = reader.GetInt32(9) == 1,
+                UploadTime = reader.IsDBNull(10) ? (DateTime?)null : DateTime.Parse(reader.GetString(10)),
+                MD5Hash = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
+                IsDeleted = reader.GetInt32(12) == 1
+            };
+        }
+        
         public List<FileInfoModel> GetUnuploadedFiles()
         {
             var files = new List<FileInfoModel>();
@@ -186,24 +207,7 @@ namespace FileRecord.Data
             
             while (reader.Read())
             {
-                var fileInfo = new FileInfoModel
-                {
-                    Id = reader.GetInt32(0),
-                    FileName = reader.GetString(1),
-                    FilePath = reader.GetString(2),
-                    FileSize = reader.GetInt64(3),
-                    CreatedTime = DateTime.Parse(reader.GetString(4)),
-                    ModifiedTime = DateTime.Parse(reader.GetString(5)),
-                    Extension = reader.GetString(6),
-                    DirectoryPath = reader.GetString(7),
-                    MonitorGroupId = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
-                    IsUploaded = reader.GetInt32(9) == 1,
-                    UploadTime = reader.IsDBNull(10) ? (DateTime?)null : DateTime.Parse(reader.GetString(10)),
-                    MD5Hash = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
-                    IsDeleted = reader.GetInt32(12) == 1
-                };
-                
-                files.Add(fileInfo);
+                files.Add(MapReaderToFileInfoModel(reader));
             }
             
             return files;
@@ -252,24 +256,7 @@ namespace FileRecord.Data
             
             while (reader.Read())
             {
-                var fileInfo = new FileInfoModel
-                {
-                    Id = reader.GetInt32(0),
-                    FileName = reader.GetString(1),
-                    FilePath = reader.GetString(2),
-                    FileSize = reader.GetInt64(3),
-                    CreatedTime = DateTime.Parse(reader.GetString(4)),
-                    ModifiedTime = DateTime.Parse(reader.GetString(5)),
-                    Extension = reader.GetString(6),
-                    DirectoryPath = reader.GetString(7),
-                    MonitorGroupId = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
-                    IsUploaded = reader.GetInt32(9) == 1,
-                    UploadTime = reader.IsDBNull(10) ? (DateTime?)null : DateTime.Parse(reader.GetString(10)),
-                    MD5Hash = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
-                    IsDeleted = reader.GetInt32(12) == 1
-                };
-                
-                files.Add(fileInfo);
+                files.Add(MapReaderToFileInfoModel(reader));
             }
             
             return files;
@@ -303,24 +290,7 @@ namespace FileRecord.Data
             
             while (reader.Read())
             {
-                var fileInfo = new FileInfoModel
-                {
-                    Id = reader.GetInt32(0),
-                    FileName = reader.GetString(1),
-                    FilePath = reader.GetString(2),
-                    FileSize = reader.GetInt64(3),
-                    CreatedTime = DateTime.Parse(reader.GetString(4)),
-                    ModifiedTime = DateTime.Parse(reader.GetString(5)),
-                    Extension = reader.GetString(6),
-                    DirectoryPath = reader.GetString(7),
-                    MonitorGroupId = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
-                    IsUploaded = reader.GetInt32(9) == 1,
-                    UploadTime = reader.IsDBNull(10) ? (DateTime?)null : DateTime.Parse(reader.GetString(10)),
-                    MD5Hash = reader.IsDBNull(11) ? string.Empty : reader.GetString(11),
-                    IsDeleted = reader.GetInt32(12) == 1
-                };
-                
-                files.Add(fileInfo);
+                files.Add(MapReaderToFileInfoModel(reader));
             }
             
             return files;
@@ -422,6 +392,32 @@ namespace FileRecord.Data
             command.Parameters.AddWithValue("@LastUpdated", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
 
             command.ExecuteNonQuery();
+        }
+        
+        /// <summary>
+        /// 获取所有文件信息
+        /// </summary>
+        /// <returns>文件信息列表</returns>
+        public List<FileInfoModel> GetAllFiles()
+        {
+            var files = new List<FileInfoModel>();
+            
+            using var connection = new SqliteConnection(_connectionString);
+            connection.Open();
+            
+            var selectSql = @"SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, 
+                Extension, DirectoryPath, MonitorGroupId, IsUploaded, UploadTime, MD5Hash, IsDeleted 
+                FROM FileInfos ORDER BY CreatedTime DESC";
+            
+            using var command = new SqliteCommand(selectSql, connection);
+            using var reader = command.ExecuteReader();
+            
+            while (reader.Read())
+            {
+                files.Add(MapReaderToFileInfoModel(reader));
+            }
+            
+            return files;
         }
     }
 }

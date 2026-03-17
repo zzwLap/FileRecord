@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using FileRecord.Data;
 using FileRecord.Models;
 
@@ -105,34 +106,7 @@ namespace FileRecord.Services.Upload
         // 从数据库获取特定路径的文件信息
         private FileInfoModel? GetFileInfoByPath(string filePath)
         {
-            using var connection = new Microsoft.Data.Sqlite.SqliteConnection(_databaseContext.GetConnectionString());
-            connection.Open();
-            
-            var selectSql = "SELECT Id, FileName, FilePath, FileSize, CreatedTime, ModifiedTime, Extension, DirectoryPath, MonitorGroupId, IsUploaded, UploadTime FROM FileInfos WHERE FilePath = @FilePath";
-            
-            using var command = new Microsoft.Data.Sqlite.SqliteCommand(selectSql, connection);
-            command.Parameters.AddWithValue("@FilePath", filePath);
-            
-            using var reader = command.ExecuteReader();
-            if (reader.Read())
-            {
-                return new FileInfoModel
-                {
-                    Id = reader.GetInt32(0),
-                    FileName = reader.GetString(1),
-                    FilePath = reader.GetString(2),
-                    FileSize = reader.GetInt64(3),
-                    CreatedTime = DateTime.Parse(reader.GetString(4)),
-                    ModifiedTime = DateTime.Parse(reader.GetString(5)),
-                    Extension = reader.GetString(6),
-                    DirectoryPath = reader.GetString(7),
-                    MonitorGroupId = reader.IsDBNull(8) ? string.Empty : reader.GetString(8),
-                    IsUploaded = reader.GetInt32(9) == 1,
-                    UploadTime = reader.IsDBNull(10) ? (DateTime?)null : DateTime.Parse(reader.GetString(10))
-                };
-            }
-            
-            return null;
+            return _databaseContext.GetFileInfoByPath(filePath);
         }
     }
 }
